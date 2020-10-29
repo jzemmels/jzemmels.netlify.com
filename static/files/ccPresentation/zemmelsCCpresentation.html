@@ -1,0 +1,2208 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+  <head>
+    <title>cmcR: An open-source implementation of the Congruent Matching Cells method</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Joseph Zemmels" />
+    <link href="libs/remark-css/default.css" rel="stylesheet" />
+    <link href="libs/remark-css/default-fonts.css" rel="stylesheet" />
+    <script src="libs/kePrint/kePrint.js"></script>
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# <code>cmcR</code>: An open-source implementation of the Congruent Matching Cells method
+## Creative Component Oral Exam
+### Joseph Zemmels
+### Iowa State University
+### 4/13/20
+
+---
+
+&lt;style&gt;
+pre {
+    display: block;
+    font-family: monospace;
+    white-space: pre;
+    margin: 1em 0px;
+    margin-top: 0em;
+    margin-right: 0px;
+    margin-bottom: 0em;
+    margin-left: 0px;
+}
+&lt;/style&gt;
+
+
+
+
+
+#Overview
+
+ - Motivation and Background Information
+ 
+ - Pre-processing procedures
+ 
+ - Cell-based comparison procedure
+ 
+ - Congruent Matching Cells logic
+ 
+ - Results &amp; Discussion
+ 
+ - Conclusion and Future Work
+
+???
+- This main goal of this project was to implement the Congruent Matching Cells method as originally proposed by John Song in 2013 as well as one improvement to the method proposed by Tong and others in 2014. The implementation is provided in the form of the `cmcR` package, currently available for download off of my Github.
+
+- My plan for this presentation is to:
+ - First introduce the problem and provide some exposition about the CMC method that will be expanded upon later
+ - Discuss pre-processing steps that need to be performed on the cartridge case data in order to make the method work properly
+ - Talk about the features we extract from the data for use in the method
+ - Talk deeper about how we use the extracted features to make classification of matching vs. non-matching cartridge cases
+ - Discuss results obtained from applying the method to commonly used cartridge case data in the CMC literature
+ - Provide final conclusions and discuss future work
+
+- While discussing various methods, I will be referring to associated functions in the `cmcR` package throughout the presentation. 
+
+---
+class: inverse, center, middle
+
+# Motivation &amp; Background Information
+
+---
+
+# Anatomy of a projectile
+
+.pull-left[
+1) Bullet
+
+2) Cartridge case
+
+3) Propellant
+
+4) Rim
+
+5) Primer
+]
+
+.pull-right[
+&lt;img src="images/cartridgeCaseDiagram.png" width="330" style="display: block; margin: auto 0 auto auto;" /&gt;
+]
+
+.footnote[
+[Image Source](https://commons.wikimedia.org/wiki/File:Bulletfixed.PNG)
+]
+
+???
+- First, it's important to understand some common terminology.
+- The diagram shows the entirety of what we might colloquially refer to as a "bullet." However, the bullet is actually only the projectile stored at the tip of the overall cartridge.
+- We are most interested in the base of the cartridge case, the metal tube containing the bullet at at its neck and propellant inside. In particular, we are interested in the area around the primer.
+- The primer is the region that is struck by the firing pin during the firing process.
+
+---
+
+# Breech face impressions
+
+ - During firing process, cartridge case hits back wall (*breech face*) of barrel
+
+ - Contact often "stamps" breech face markings onto cartridge case primer/base
+ 
+.pull-left[
+&lt;img src="images/firearmBreechFace.png" width="400" height="300" style="display: block; margin: auto 0 auto auto;" /&gt;
+]
+
+.pull-right[
+&lt;img src="images/cartridgeCasePrimer.png" width="400" height="300" style="display: block; margin: auto 0 auto auto;" /&gt;
+]
+
+.footnote[
+[Images Source](http://www.firearmsid.com/A_CCIDImpres.htm)
+]
+
+???
+- During the firing process, as a bullet is propelled down the barrel of a firearm, the rest of the cartridge is sent backwards in response.
+- The base of the cartridge case slams against the back wall, referred to as the breech face, of the firearm's barrel.
+- Any markings left on the breech face due to, e.g., the manufacturing process can be "stamped" into the metal of the cartridge case base and primer.
+- The two images illustrate this. The left image shows the breech face of a 12 gauge shotgun. We can clearly see some markings on this breech face.
+ - The right image shows the primer of a spent cartridge case fired from this 12 gauge shotgun. We can see that some of the markings of the breech face have been imprinted onto this cartridge case.
+- It has long been believed that a cartridge case can be matched to the firearm from which it was fired based on these breech face impressions. In particular, we may have a "questioned" cartridge case of unknown source that we can compare to a known-source cartridge case.
+
+---
+#Breech face vs. firing pin impressions
+
+&lt;img src="images/primerBFImpressionDiagram.png" width="351" style="display: block; margin: auto;" /&gt;
+
+.footnote[
+[Image Source](https://pdfs.semanticscholar.org/f2ab/001b090f2fcb79eff7a83b8aafeb81909944.pdf?_ga=2.260252488.476104195.1585242193-1176892230.1581362963)
+]
+
+???
+- To match two cartridge cases, we are interested in comparing their breech face impressions.
+- The image here shows that the breech face impression region of interest is actually rather small compared to the overall cartridge case base.
+- Additionally, the impression left by the firing pin striking the primer is contained by the breech face impression region.
+- Classifying matches based on markings left by the firing pin impression has also been explored. However, firing pin impressions are not the focus of the Congruent Matching Cells method.
+---
+# Cartridge case surface matrices
+
+
+```r
+fadul1.1 &lt;- x3ptools::read_x3p("data/Fadul 1-1.x3p")
+```
+
+```r
+x3ptools::image_x3p(fadul1.1)
+```
+
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-7-1.png" style="display: block; margin: auto;" /&gt;
+
+.footnote[
+[Data Source](https://tsapps.nist.gov/NRBTD/Studies/Studies/Details/e7a8aab8-8d5a-44ac-b2be-f0de7c2ca505?nm=True&amp;mt=1&amp;m=3&amp;sp=1)
+]
+
+???
+- Cartridge case data typically come in two forms: optical 2D images and 3D topographical scans.
+- It has been demonstrated by a number of authors that the 3D scans are easier to classify as matches vs. non-matches than the 2D images. The `cmcR` package was written to interface with the topographical scans.
+
+- Many of these cartridge case scans are openly available from the NIST Ballistics and Toolmarks Research Database. The data are commonly stored in an XML 3D Surface Profile (or .x3p) file format. - The cartridge case data are represented in the .x3p file via a *surface matrix*. This is a single spatially-ordered matrix whose elements represent height values in micrometers (or *microns*) at a particular location. 
+- It is these surface matrices with which we work directly when classifying matches. I will be referring to "cartridge case scans" and "surface matrices" synonymously.
+
+- The `x3ptools` package in `R` can be used to interface with  .x3p files. The code shown will read an .x3p file into `R` and display it in 3D using a local `rgl` device. 
+- The plot shown, while not the output of the `image_x3p` function, shows a representation of the contents of the surface matrix where height values are mapped to grayscale. 
+ - Note that lighter colored pixels represent higher values than darker pixels. You can see that the area of the primer surrounding the firing pin impression is elevated relative to the rest of the cartridge case scan.
+ - Note also that purely white pixels like those on the edges of the image shown are all `NA` or missing values. This will be important to remember later on.
+
+---
+
+# Congruent Matching Cells method
+
+ - Some regions of cartridge case contain strong *ballistic signature*
+ 
+ - Comparing entire scans may not highlight *valid correlation areas*&lt;sup&gt;[1]&lt;/sup&gt;
+ 
+ - Number of matching cells is a more granular similarity metric
+
+&lt;img src="images/im1_im2_cellComparison.png" width="567" style="display: block; margin: auto;" /&gt;
+
+.footnote[
+[1] Song [Son13]
+]
+
+???
+- The Congruent Matching Cells method was a method proposed by John Song at NIST in 2013 to perform cartridge case identification.
+- The motivation for the method is that it is common for only some regions of the cartridge case to come into contact with the firearm's breech face. As such, only some regions of the scan contain strong *ballistic signature* that can be used to identify matches.
+- Rather than comparing entire scans to each other, the Congruent Matching Cells method proposes breaking a scan up into a grid of cells. Each of these cells is compared to an associated region in the other cartridge case scan.
+- The image below illustrates this idea with a particular cell/region pair near the top-left corner of the scan.
+- Counting the number of highly similar cells is a more granular similarity metric than, say, a single correlation calculated across the entirety of a scan.
+
+---
+#Congruent Matching Cells method
+
+- Two surface matrices aligned through translation by `\((dx,dy)\)` and rotation by `\(\theta\)`.
+ 
+    - `\(\pmb{\beta} \equiv (dx,dy,\theta)' \in \mathbb{R} \times \mathbb{R} \times [0,360)\)` aligns surface matrix 1 to surface matrix 2
+
+--
+
+- Cartridge cases' cell/region pairs also be aligned
+
+    - `\(\pmb{\beta}_i \equiv (dx_i,dy_i,\theta_i)', i = 1,...,n\)` for `\(n\)` total pairs
+
+--
+
+- We expect `\(\pmb{\beta}_i = \pmb{\beta}, \forall i = 1,...,n\)` for true matches
+ 
+--
+ 
+- It's tractable to determine whether `\(\hat{\pmb{\beta}}_i \approx \hat{\pmb{\beta}}_j, i \neq j\)`
+ 
+- Use estimated alignment parameters, `\(\hat{\pmb{\beta}}_i\)`, as features to classify matches 
+
+???
+- This slide details the main idea behind why the Congruent Matching Cells method is a coherent way to identify cartridge case matches.
+- In their raw format, two cartridge case scans may not be aligned correctly. In particular, one may need to be rotated/translated to align with the other.
+ - We'll refer to the "true" alignment parameters via a vector `\(\pmb{\beta}\)`
+- If we consider one of the surface matrices split up into cells, we can also align each cell/region pair - call these "true" alignment parameters `\(\pmb{\beta}_i\)`
+- If a pair of cartridge case cells is truly matching, we would expect the alignment parameters for each cell/region pair to agree with the alignment parameters for the overall scans.
+- However, we don't actually know any of these "true" alignment parameters in practice. Instead, it's more tractable to determine whether estimated alignment parameters agree with each other across cell/region pairs, at least approximately.
+- The Congruent Matching Cells method effectively proposes using the estimated alignment parameters as features to classify matches.
+
+---
+#Congruent Matching Cells method
+
+![](images/bfRotationComparison.gif)&lt;!-- --&gt;
+
+???
+- To determine the estimated alignment parameters, each cell/region pair is compared for various rotations of one cartridge case scan.
+- On the left of the GIF shown, we can see one cartridge case scan that has been divided into cells.
+ - As an example, one of the cells near the top-left corner of the scan is paired with the region in the other scan that is highlighted in blue (it's somewhat difficult to see).
+ - We can think of this as telling the cell in the left scan to watch a small window of the second scan as we rotate the scan.
+ - For each rotation, we compare the cell in the first scan to whichever part of the second scan is in the window it was assigned.
+ - Keep in-mind that the cell in the left scan stays fixed as well as the location of the region in the second scan. The only thing that changes is the part of the second scan that ends up in the region.
+
+---
+class: inverse, middle, center
+
+# Pre-processing procedures
+
+???
+- Now we've laid some groundwork, we will begin discussing the actual implementation of the CMC method available in the `cmcR` package. 
+- To illustrate usage of the package, I will combine explanations of the various procedures implemented as well as how to implement these procedures using various functions available in the `cmcR` package.
+- We will discuss usage of the `cmcR` package in the same order that one might use the package to perform a cartridge case comparison.
+ - That means starting with the procedures used to pre-process the scans before applying the method.
+ - It's additionally important to discuss these pre-processing procedures because we have found that the CMC method is sensitive to how the data are prepared. Some discussion will be had related to this, but most results can be found in the Results &amp; Discussion and Appendix of the Creative Component manuscript associated with the project. 
+---
+
+# Pre-processing goals
+
+1) Remove regions of scan that do not contain breech face impressions
+ 
+- Preferably do so automatically
+     
+2) Highlight remaining breech face impressions via Gaussian filtering
+ 
+
+&lt;img src="images/bfImpressionHighlighted.png" width="340" style="display: block; margin: auto;" /&gt;
+
+???
+- As previously discussed, the CMC method requires that the cartridge case scans be pre-processed in a variety of ways before being compared.
+- The goal of pre-processing is two-fold:
+ - For one, we want to automatically remove regions of the cartridge case scan that do not contain breech face impressions - at least not consistently. These regions are highlighted in red in the image shown.
+ - Once these regions are removed, we want to "highlight" the remaining breech face impressions in some way while removing any other structure in a scan that may interfere with getting accurate similarity scores. A common way to do this when working with 3D topography data is with a Gaussian filter.
+
+---
+
+# 1. Identify BF impression height value
+
+- RANSAC&lt;sup&gt;[1]&lt;/sup&gt; (Random Sample Consensus) robust, iterative plane-fitting
+
+.footnote[
+[1] Fischler and Bolles [FB81]
+]
+
+--
+
+- Use RANSAC method to identify BF impression height value in scan
+
+--
+
+ - Take residuals between fitted plane and observed values within the final selection threshold specified
+
+???
+- The first step is to identify the height value in the scan at which the breech face impressions are. 
+ - The RANSAC method is a robust plane-fitting method that works well when a trend in data is obscured by scatters of other data. 
+ - This is certainly the case in cartridge case scans. In particular, the plateaued region caused by the firing pin impression striking the primer makes it difficult to find the breech face impression height value analytically.
+- Once the RANSAC plane is fit, we can compute the residuals between the fitted plane and the observations and only take residuals within some final selection threshold as our "breech face impression" values.
+ - This is analogous to removing a trend to a time series before modeling the residuals.
+
+---
+
+#1. Identify BF impression height value
+
+
+```r
+fadul1.1 &lt;- x3ptools::read_x3p("data/Fadul 1-1.x3p") %&gt;%
+  x3ptools::sample_x3p(m = 2)
+
+fadul1.1$surface.matrix &lt;- fadul1.1$surface.matrix %&gt;%
+  cmcR::preProcess_ransac(inlierTreshold = 10^-5,
+                          finalSelectionThreshold = 2*(10^-5),
+                          iters = 150) %&gt;%
+  cmcR::preProcess_levelBF(useResiduals = TRUE)
+```
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-12-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- The code on this slide first reads a cartridge case scan into `R` from an .x3p file and then downsamples the scan by a factor of 4 (i.e., samples every other row/column starting from the bottom left corner of the surface matrix).
+ - This is done consistently in the CMC method literature, mainly for the sake of computational ease, and is recommended when using the `cmcR` package.
+ - Results when using entire scans have been found to be comparable to these downsampled scans, although we don't currently have results on-hand.
+- Once the scan is read into `R`, the ransac method is applied. The code shows how one might use the `cmcR` package functions to accomplish this.
+- The plot then shows the output residuals after fitting the RANSAC plane.
+
+Maybe skip these points:
+ - The `inlierThreshold` controls how precise the estimated final plane is. The `finalSelectionThreshold` then dictates how far from the fitted plane an observation is allowed to be to call it part of the "breech face impressions."
+- Then, the `preProcess_levelBF` function with the `useResiduals` argument set to `TRUE` will return the residuals between the RANSAC fitted plane and the cartridge case scan within the `finalSelectionThreshold` value (which is 2 microns).
+
+---
+#2. Removing "minutiae"
+
+- Crop-out whitespace exterior to breech face impressions
+
+--
+
+- Estimate radius of inner firing pin impression circle
+
+--
+
+- Use Hough transform circle detection method to detect and remove observations within firing pin impression circle.
+
+
+???
+- As we can see on the previous slide, there are still some observations left after fitting the RANSAC method that aren't a part of the breech face impression region of interest.
+- We can crop-out the observations in the corners of the surface matrix.
+- Additionally, we can use a Hough transform circle detection method to find and remove observations left within the firing pin impression circle.
+---
+# 2. Removing "minutiae"
+
+
+```r
+fadul1.1$surface.matrix &lt;- fadul1.1$surface.matrix %&gt;%
+  cmcR::preProcess_cropWS(croppingThresh = 2) %&gt;%
+  cmcR::preProcess_removeFPCircle()
+```
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-14-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- We can see the output of cropping whitespace on the exterior of the scan and removing the firing pin impression circle observations on the interior on this slide.
+- At the moment, this scan would be "ready" for the CMC method. However, performing an additional processing step by applying a Gaussian filter to the scan has been demonstrated to improve the method's classification accuracy.
+
+---
+#3. Gaussian filtering
+
+- "Low-frequency", global structure due to, e.g., manufacturing specs
+
+- "High-frequency" noise due to, e.g., scanning process
+
+--
+
+- Goal is to match cartridge cases based on *breech face impressions*, not on whether they share a manufacturer
+
+--
+
+- Structures are related to *subclass characteristics* that should not be used in making identifications
+
+- False positive rate increases in test data if structures aren't removed 
+
+--
+
+- Gaussian bandpass filtering reduces effects of large and small-scale structure
+
+&lt;!-- -- --&gt;
+&lt;!-- - Lowpass filtering = "smoothing" --&gt;
+
+&lt;!--     - Gaussian-weighted moving average --&gt;
+
+&lt;!-- -- --&gt;
+
+&lt;!-- - Highpass filtering = "sharpening" --&gt;
+
+&lt;!--     - Subtract complementary lowpass-filtered matrix --&gt;
+
+&lt;!-- -- --&gt;
+
+&lt;!-- - Bandpass filtering = highpass followed by lowpass --&gt;
+
+???
+- There may exist some global "signal" in a cartridge case scan due to the way in which the cartridge case was manufactured.
+ - We can refer to this as "low frequency" or "large wavelength" structure
+- Additionally, noise may be inherent in a scan due to small measurement error in the scanning process.
+ - These can be thought of as "high frequency" structure
+- Neither of these structures are useful to us in making classifcations
+
+- One might think that we want to include signal that could tie a cartridge case to a particular manufacturer.
+- However, it's important to keep in-mind that we want to make classifications based on the breech face impressions (i.e., signal introduced from the firearm) rather than manufacturing specifications.
+
+- We have seen evidence of an increase in the false positive rate if the low frequency signal is not removed prior to comparison. This makes sense since two cartridge cases fired from two different guns may have come from the same manufacturer, so not removing such information may lead us to make misclassifications.
+
+- Gaussian bandpass filtering is a tool that can be used to reduce the effects of both of these strucures
+
+&lt;!-- - A Gaussian filter is a tool to lessen the effects of certain signals in a scan --&gt;
+&lt;!-- - A low pass Gaussian filter can be thought of as performing a locally weighted moving average over a scan. This then "smooths" the scan and reduces the effects of high frequency noise. --&gt;
+&lt;!-- - A high pass Gaussian filter, on the other hand, is meant to reduce the effects of low frequency signal. The term used for the effect such a filter has is to "sharpen" the image since high frequency signals become more apparent. --&gt;
+&lt;!--  - To implement a high frequency filter, one can subtract the complementary lowpass filtered surface matrix --&gt;
+&lt;!-- - A bandpass filter combines a highpass and lowpass filter - thus reducing the effects signals that we don't want to consider in our comparisons --&gt;
+
+---
+#3. Gaussian filtering
+
+
+```r
+fadul1.1$surface.matrix &lt;- fadul1.1$surface.matrix %&gt;%
+  cmcR::preProcess_gaussFilter(res = fadul1.1$header.info$incrementY,
+                               wavelength = c(16,250),
+                               filtertype = "bp")
+```
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-16-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide shows the output after applying a bandpass Gaussian filter to the signal.
+- Note that there is basically a reciprocal relationship between the wavelengths we mean to target and the frequency (up to a scan resolution scaling constant).
+
+---
+#Pre-processing procedure conclusions
+
+- Pre-processing procedures affect final results
+
+- Methods used by some authors are still unavailable
+
+    - Second-order robust Gaussian regression filter
+
+    - Exact implementations may never be available
+
+???
+- To re-iterate, we have seen that the CMC method is highly dependent on the pre-processing procedures used prior to comparison.
+- It is important to note that some methods are still unavailable to us, such as this second-order robust Gaussian regression filter, but current work is being done to try to implement this.
+- Unfortunately, we may never have access to the exact implementations - which may make perfect replication of results impossible.
+
+---
+class: inverse, middle, center
+
+# Cell-based comparison procedure
+
+???
+- Assuming that we have two fully processed scans, they are now ready to be compared using the cell-based comparison procedure briefly mentioned earlier.
+- First, we must discuss what metrics we calculate during this comparison.
+
+---
+#Cross-correlation function
+
+- For real-valued, bivariate funtions `\(f(x,y),g(x,y)\)` for `\(x,y \in \mathbb{R}\)`, *cross-correlation function* (CCF) is
+
+`$$(f \star g)(x,y) := \int_{-\infty}^\infty \int_{-\infty}^\infty f(t,s) g(t + x,s + y)\ dtds$$`
+
+--
+
+- **Discrete analogue:** For two discrete, bivariate functions `\(A[m,n], B[m,n]\)` for `\(m,n \in \mathbb{Z}\)`, the CCF is
+
+`$$(A \star B)[m,n] := \sum_{i = -\infty}^\infty \sum_{j = -\infty}^\infty A[i,j] B[i + m,j + n]$$`
+
+--
+
+- Think of `\(A[m,n]\)` as `\(m\)`th row and `\(n\)`th column of matrix `\(A\)`
+
+- `\(A\)` and `\(B\)` can be normalized so that CCF is between -1 and 1
+
+???
+- Similarity between a cell/region pair is measured using the cross-correlation function.
+- For two real-valued, bivariate functions, the CCF is defined by the integral shown.
+ - We can see that this integral is highly similar to the convolution between `\(f\)` and `\(g\)`
+ - Considering the integrand, this product can be calculated for various values of `\((x,y)\)`. So we can picture calculating the integral of the product between functions `\(f\)` and `\(g\)` while sliding `\(g\)` around 2-space.
+ - With this mental picture, it seems intuitive that the CCF will be maximized when `\(f\)` and `\(g\)` are aligned to each other.
+- The discrete analogue of the CCF is also given.
+ - If we think of these discrete functions as matrices, then `\([m,n]\)` is the `\(m\)`th row and `\(n\)`th column of the matrix
+ - Additionally, we can normalize `\(A\)` and `\(B\)` so that the CCF is between -1 and 1 and thus more interpretable.
+
+---
+#Cross-correlation theorem
+
+- Calculating CCF from definition is computationally taxing
+
+--
+
+- By the Cross-correlation theorem,
+`$$A \star B = \mathcal{F}^{-1}\left(\overline{\mathcal{F}(A)} \cdot \mathcal{F}(B)\right)$$`
+ - `\(\mathcal{F}(\cdot)\)` denotes Fourier transform
+ 
+ - `\(\mathcal{F}^{-1}(\cdot)\)` denotes inverse Fourier transform
+
+ - `\(\overline{f}\)` denotes complex conjugate of function `\(f\)`
+ 
+ - product on RHS is element-wise (Hadamard) multiplication
+
+--
+
+- *Fast Fourier Transform* drastically improves computational efficiency&lt;sup&gt;[1]&lt;/sup&gt;
+
+.footnote[
+[1] Tai and Eddy [TE18]
+]
+
+???
+- It is computationally taxing to calculate the CCF from definition
+- Instead, the Cross-correlation theorem allows us to instead consider calculating the CCF using Fourier transforms.
+ - The important thing from the equation given is that we are calculating an element-wise product after Fourier transforming the two matrices `\(A\)` and `\(B\)`. This is much faster than the moving product from the definition of the CCF.
+ - The Fast Fourier Transform can be used to drastically improve computational time. In particular, we can exchange the moving product from the definition for essentially 3 Fourier transformations and an element-wise product.
+ - I don't remember the actual computational complexity of the two procedures, but I know that calculating the CCF in this way is much faster.
+
+---
+#CCF alignment &amp; missing values
+
+- CCF indicates how one matrix should be translated to align with another
+
+`$$\text{CCF}_{\max} := \max_{m,n} \mathcal{F}^{-1}\left(\overline{\mathcal{F}(A)} \cdot \mathcal{F}(B)\right)[m,n]$$`
+
+`$$[m^*,n^*] := \arg\max_{m,n} \mathcal{F}^{-1}\left(\overline{\mathcal{F}(A)} \cdot \mathcal{F}(B)\right)[m,n]$$`
+
+--
+
+- Note: this method requires replacing missing/`NA` values
+
+ - `\(\text{CCF}_{\max}\)` values are often "deflated" for cartridge case scans
+ 
+ - `\([m^*,n^*]\)` are often good estimates of "correct" translation parameters
+ 
+--
+ 
+- "True" `\(\text{CCF}_{\max}\)` value, without replacing `NA`s, can be determined after aligning matrices by `\([m^*,n^*]\)`
+
+???
+- So the CCF can be used to indicate how one matrix should be translated to align with another.
+ - The `\(CCF_\max\)` is just the maximum value attained by the CCF 
+ - Additionally, the location where the `\(CCF_\max\)` occurs tells us how to translate one matrix to align with another
+- It's critical to note, however, that this Fourier transform-based method of calculating the CCF requires replacing missing values in a matrix
+ - Recall that there are naturally *many* missing values in a surface matrix. It is common to replace missing values with the average value in the matrix.
+ - The consequence of this is that the `\(CCF_\max\)` values calculated in this way are often deflated for cartridge case scans. Thus, they are not accurate measures of similarity.
+ - However, the translation values, `\([m^*,n^*]\)` at which the `\(CCF_\max\)` value occurs are often good estimates of the correct translation parameters.
+- After aligning two matrices by `\([m^*,n^*]\)`, the "true" `\(CCF_\max\)` can be calculated in which we don't replace missing values.
+
+---
+#CCF alignment - example
+
+.pull-left[
+&lt;img src="images/gaussianFilterInitialPlot.png" width="933" style="display: block; margin: auto;" /&gt;
+]
+
+.pull-right[
+&lt;img src="images/ccfExample_im2.png" width="933" style="display: block; margin: auto;" /&gt;
+]
+
+&lt;img src="images/ccfExample_map.png" width="395" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide shows an example that illustrates how to interpret the CCF.
+- We can see that the two images are identical except that the white box in one has been translated to the top-left corner.
+- The CCF, however, picks up on the correct translation to shift the right image back to the align with the left image.
+- Note, however, that the CCF does not attain 1. This is because some Gaussian noise has been added to both.
+
+---
+# Cell-based comparison procedure
+
+![](images/bfRotationComparison.gif)&lt;!-- --&gt;
+
+???
+- Now that we've developed an intuition for how we can compare two matrices, let's remind ourselves of the cell-based comparison procedure.
+- It's intuitive to think of this as telling each cell in one scan to "watch" a region in the other scan as its being rotated. For each rotation value, we will record the `\(CCF_\max\)` and associated translation values, `\((dx,dy)\)`, for every cell/region pair, with some exclusions.
+
+---
+# Cell-based comparison procedure
+
+1) Partition surface matrix 1 into grid of cells
+
+--
+
+2) Pair each cell in surface matrix 1 with its counterpart larger region in surface matrix 2.
+
+--
+
+3) For each rotation value:
+
+- Rotate surface matrix 2 using linear interpolation scheme
+  
+--
+    
+- Remove from consideration cell/region pairs with too few observed values
+  
+--
+
+- Shift and/or scale cells/regions (e.g., by respective average and/or standard deviation)
+  
+--
+    
+- Replace `NA` values with 0
+
+--
+
+- Calculate maximum cross-correlation function and associated `\((dx,dy)'\)` values using a FFT-based method
+
+???
+- Let's now actually step through the comparison procedure. This is the process we use to extract features from a cartridge case pair to make identifications, so its important to understand how we do so.
+
+- Deciding whether cell/region pairs have too few observed values is loosely determined. The default is to throw away any pairs in which either matrix contains fewer than 15% of observed values.
+- The shifting/scaling of the cell/region pairs does change the final results and is somewhat philosophically murky (how much do we want to tamper with the actual values in a surface matrix?). However, it seems that this is done at NIST.
+- After shifting the cell/region pairs, their mean value should be 0. We can then replace missing values with 0.
+---
+#Cell-based comparison procedure
+
+3) For each rotation value:
+
+- Using `\((dx,dy)'\)` values, calculate pairwise-complete correlation between cell and a cell-sized matrix extracted from region in surface matrix 2
+
+&lt;img src="./images/ccfCellPairExample.png" width="583" style="display: block; margin: auto;" /&gt;
+
+???
+- Once we get the `\((dx,dy)\)` values by which to translate a particular cell/region pair, we can calculate the "true" `\(CCF_\max\)` by extracting a cell-sized matrix from the larger region in surface matrix 2.
+- The plot on this slide shows the location of the cell-sized matrix that we can use to  calculate the pairwise-complete correlation as an orange square. The `CCF_max` value given in the table is calculated using the FFT-based method, so is not reliable.
+---
+# Cell-based comparison procedure
+
+
+
+
+```r
+comparison1 &lt;- cmcR::cellCCF(fadul1.1,
+                             fadul1.2,
+                             thetas = seq(-30,30,by = 3),
+                             cellNumHoriz = 8,
+                             regionToCellProp = 4,
+                             minObservedProp = .15,
+                             centerCell = "individualCell",
+                             scaleCell = "individualCell")
+```
+
+```r
+comparison1$ccfResults$`-30`
+```
+
+
+&lt;div style="border: 1px solid #ddd; padding: 0px; overflow-y: scroll; height:200px; "&gt;&lt;table class="table" style="margin-left: auto; margin-right: auto;"&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellNum &lt;/th&gt;
+   &lt;th style="text-align:left;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellID &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; fft.ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dx &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dy &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6394938 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3927187 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -34 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 16 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3892646 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3075786 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 35 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 5 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5069567 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3735940 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -30 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6505398 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1941101 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -19 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7017533 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3479198 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 22 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7008966 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2533549 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -35 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 23 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8844661 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5132943 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -11 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 16 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5752828 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2184171 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -16 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 17 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5632033 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2104306 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 36 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7311610 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3613980 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -22 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 31 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 23 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6649257 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4411520 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -16 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5302772 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2675630 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -25 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 25 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4253519 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1691998 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 35 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 31 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7579754 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3856591 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -36 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 32 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6065951 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2483960 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 33 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3927668 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2007891 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -17 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 34 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4122892 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2161820 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 35 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 39 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7604274 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5117184 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -13 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 40 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6213252 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2633999 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 23 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 41 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5510173 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3352693 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 27 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 42 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5758398 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2362528 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 28 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 43 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4972881 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1663974 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 28 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 46 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6271995 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2104862 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 47 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3913027 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1671559 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -30 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 35 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 48 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5294586 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2250945 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -14 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 50 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4600662 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2562463 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 19 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 51 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5135831 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2117756 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 22 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 52 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5623798 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3216802 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 13 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 53 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5309130 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2524229 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 54 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3617413 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1328551 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 17 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -7 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 55 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5159072 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3090337 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 59 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6092757 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3071387 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 60 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5362015 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2661880 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 61 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5462265 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3301186 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -36 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 62 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6009329 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4198376 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;&lt;/div&gt;
+
+???
+- This slide shows the code to implement this cell-based comparison procedure using `cmcR`. 
+ - We can see that we are considering a grid of `\(\theta\)` values from -30 to 30.
+ - Also, we are partitioning the first surface matrix into a grid of `\(8 \times 8\)` cells. 
+ - The corresponding regions will in the second surface matrix will be 4 times the size (double the side lengths) of their counterpart cells.
+ 
+- The data frame shows the results of the cell-based comparison procedure when the second surface matrix was rotated by -30 degrees.
+ - The `cellNum` columns provides the index starting from the top left corner moving right and down. 
+ - The `cellID` column is the actual rows/columns in the overall surface matrix that each cell is taken from.
+ - The `ccf` column is the pairwise-complete correlations calculated between a cell and the cell-sized matrix extracted from the cell's counterpart region in surface matrix 2.
+ - The `fft.ccf` column is the CCF values calculated using the FFT method
+ - The `dx` and `dy` columns are the translation values at which each `fft.ccf` values occurred.
+ 
+- We have one of these data frames for each `\(\theta\)` value considered.
+
+---
+class: inverse, middle, center
+
+# Congruent Matching Cells logic
+
+???
+- We have now performed the cell-based comparison procedure between a pair of cartridge case scans.
+- The Congruent Matching Cells method then provides us some guidance for how to take all of the information calculated using this procedure and actually use it to classify matches.
+- Remember that we are using the estimated alignment parameters as features to classify matches
+---
+# Initially proposed method
+
+- For each cell/region pair, determine alignment parameter estimates at which max CCF occurs
+
+    - `\(\hat{\pmb{\beta}}_{\max,i}\)` and `\(CCF_{\max,i}\)` for `\(i = 1,....,n\)` cells
+
+- Cell/region pairs allowed to "vote" for a single set of alignment parameters
+
+
+```r
+topResults &lt;- cmcR::topResultsPerCell(comparison1$ccfResults)
+```
+
+???
+- The first version of the method was proposed by John Song in 2013.
+- In this initially proposed method, we only consider the alignment parameters at which the max CCF occurs. We'll call this `\(\beta{\max,i}\)` for the `\(i\)`th cell/region pair
+- We can think of this as only allowing each cell/region pair to "vote" for a particular set of alignment parameters.
+- The function call shown will take the list of data frames that we've calculated using the cell-based comparison procedure and determine each cell/region pair's vote.
+---
+#Initially proposed method
+
+```r
+topResults
+```
+&lt;div style="border: 1px solid #ddd; padding: 0px; overflow-y: scroll; height:400px; "&gt;&lt;table class="table" style="margin-left: auto; margin-right: auto;"&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellNum &lt;/th&gt;
+   &lt;th style="text-align:left;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellID &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; fft.ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dx &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dy &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; theta &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7437182 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4507050 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4212396 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2807075 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 35 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 5 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6537729 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4631398 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6782151 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2006603 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8483261 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4057049 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7371514 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2561107 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -25 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8846892 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5304820 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 20 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 20 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6132623 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2569157 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 17 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7543328 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2587314 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8425936 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3939444 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 23 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7553921 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4227012 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -18 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7524552 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3703834 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -10 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -9 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 25 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5147553 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2120541 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 31 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7836174 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4722309 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -22 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 32 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6542447 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3130381 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 33 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5412048 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2348436 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -15 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 34 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5750693 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3048763 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 26 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -19 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 39 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8061693 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5552012 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -13 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 40 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6664582 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3786536 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 31 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 41 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5794391 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3676968 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 42 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6672655 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2651846 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 43 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5500753 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1954360 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 20 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -29 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 46 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6933362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2162226 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 26 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 47 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5265170 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1487883 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 20 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 48 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6091791 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3336635 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 50 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5194628 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2702018 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 28 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 34 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -18 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 51 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5833238 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2332306 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 52 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6039683 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3461244 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 53 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5527599 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2492973 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 54 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4633644 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1508883 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 55 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6316100 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3797026 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 59 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6624278 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4164043 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 60 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6480568 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3506681 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -18 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 61 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 291 - 362 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6340543 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3638141 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 62 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6374991 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4133909 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;&lt;/div&gt;
+
+???
+- This shows a data frame containing all of the top votes for each cell/region pair.
+- If we focus specifically on, say, the `\(\theta\)` values, we can see that many cell/region pairs voted for values around -24 degrees.
+- We can also see the translation values, `\((dx,dy)\)`, that each cell/region pair voted for.
+---
+# Initially proposed method
+
+- Determine "consensus" among estimated alignment parameter values, `\(\bar{\pmb{\beta}}\)`
+
+ - E.g., `\(\bar{\pmb{\beta}}\)` is median of `\(\{\hat{\pmb{\beta}}_{\max,i}\}_{i = 1,...,n}\)`
+
+--
+
+- Classify cell/region pair as "congruent matching" if:
+
+ - associated alignment parameter estimates are all close to consensual values and
+ - `\(CCF_{\max,i}\)` is greater than some threshold.
+
+--
+
+- `\(\left\lvert\hat{\pmb{\beta}}_{\max,i} - \bar{\pmb{\beta}}\right\rvert \leq \pmb{T}\)` for thresholds `\(\pmb{T} = (T_{dx},T_{dy},T_{\theta})'\)` and `\(CCF_{\max,i} \geq T_{CCF}\)`
+
+ - Optimal `\(\pmb{T}, T_{CCF}\)` determined through experimentation.
+
+???
+- The initially proposed method takes this data frame of top results and determines some consensus amongst the `\((dx,dy,\theta)\)` values.
+ - We'll call this consensus `\(\bar{\pmb{\beta}}\)`.
+ - We can, for example, take the median `\((dx,dy,\theta)\)` values reported in the `topResults` data frame.
+- We then compare each cell/pairs vote to these consensual values. 
+ - We call a cell/region pair "congruent matching" if the estimated alignment parameters are within some threshold distance of the consensual values AND if the `\(CCF_{\max,i}\)` is greater than some threshold
+- Note that the absolute value given here does not denote the Euclidean norm of a vector, but rather the absolute value of the individual elements of a vector.
+ - So we are evaluating the inequality via the supremum norm (?). That is, *each* estimated translation parameter value needs to be within some distance of 
+
+---
+#Initially proposed method
+
+
+```r
+initialCMCs &lt;- topResults %&gt;%
+  cmcR::cmcFilter(consensus_function = median,
+                  ccf_thresh = .6,
+                  dx_thresh = 10,
+                  theta_thresh = 3)
+```
+
+```r
+initialCMCs #8 initial CMCs
+```
+
+&lt;div style="border: 1px solid #ddd; padding: 0px; overflow-y: scroll; height:300px; "&gt;&lt;table class="table" style="margin-left: auto; margin-right: auto;"&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellNum &lt;/th&gt;
+   &lt;th style="text-align:left;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellID &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; fft.ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dx &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dy &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; theta &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7437182 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4507050 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6782151 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2006603 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8483261 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4057049 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6132623 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2569157 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 17 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 1 - 73 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7543328 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2587314 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8425936 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3939444 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 42 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6672655 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2651846 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 62 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6374991 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4133909 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;&lt;/div&gt;
+ 
+???
+- We can use the `cmcFilter` function to perform the initially proposed method's logic.
+ - We need to define a consensus function and thresholds for the method to work.
+ - Shown is one example of a combination of threshold values with which we have found success
+- The data frame `initialCMCs` contains 8 CMCs determined under the initially proposed method.
+ - We can see that the `\(\theta\)` values are all relatively close to one another.
+- Note that Song originally proposed using 6 CMCs as the minimum cut-off to classify a cartridge case pair as a "match." Under this criterion, we would call this pair particular pair a match.
+ 
+---
+# "Improved" method
+
+- Cell/region pair may be highly similar at true `\(\pmb{\beta}\)`, but happened to not "vote" for it
+
+--
+
+- Use extracted features more advantageously &amp; perform comparisons in both directions &lt;sup&gt;[1]&lt;/sup&gt;
+ 
+ - Comparison for surface matrix 1 vs. surface matrix 2 and vice versa
+
+.footnote[
+[1] Tong Song, et al. [TSC15]
+]
+
+--
+
+- Calculate CMCs for *each* rotation value and identify CMC count modes
+
+    - Define "high" CMC threshold, `\(\text{CMC}_{\text{high}} = \text{CMC}_{\max} - \tau\)` for some `\(\tau\)`
+    
+    - Find `\(\theta\)` value with associated count greater than or equal to `\(\text{CMC}_{\text{high}}\)` furthest from `\(\theta\)` value with associated count equal to `\(\text{CMC}_{\max}\)`.
+
+--
+
+- If "high CMC" `\(\theta\)` values are too diffuse, then cartridge case pair likely not a match.
+
+???
+- Tong and others proposed an improvement to the initially proposed method in 2014.
+- The main motivation behind this improved method a particular cell/region pair may be highly similar at the true alignment parameter value, but didn't happen to choose it for its top "vote."
+ - Rather than only considering the top vote of a particular cell/region pair, the improved method uses the extracted information more advantageously, which will be discussed in more detail soon
+ - Additionally, the improved method considers comparison in both "directions"
+- Rather than applying the CMC logic to the top votes of each cell/region pair, the improved method applies this logic at each rotation value.
+ - This is best explained visually, so an example is provided on the next slide
+ - We can then identify a range of `\(\theta\)` values constituting a CMC count mode
+ - To identify a mode, we define a a "high" CMC threshold that is the max CMC count minus some `\(\tau\)`.
+ - Then we determine the `\(\theta\)` value with associated count greater than or equal to `\(\text{CMC}_{\text{high}}\)` that is furthest from the `\(\theta\)` value with associated count equal to `\(\text{CMC}_{\max}\)`. Effectively just trying to determine the spread of "high CMC" theta values.
+ - If the "high CMC" `\(\theta\)` values are too spread out, then the cell pair is likely not a match.
+- An additional criterion placed on the cartridge case pairs is that the CMC count needs to attain definite mode in order for us to call the pair a match.
+
+---
+class: center
+**Known match**
+&lt;img src="images/kmCMCpertheta.png" width="446" style="display: block; margin: auto;" /&gt;
+
+**Known non-match**
+&lt;img src="images/knmCMCpertheta.png" width="446" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide illustrates the idea behind the improved CMC method.
+ - The 4 plots shown are the number of CMCs per rotation value for known match and known non-match pairs of cartridge cases across rotation values from -30 to +30 degrees
+ - The number of CMCs have been calculated for both directions.
+ - For the known match pair, we can clearly see that the CMC count attains a mode around -20 in one direction in +20 in the other.
+ - Additionally, in the first plot, we can see that the only `\(\theta\)` value with associated CMC count equal to `\(\text{CMC}_{\text{high}}\)` is close to the `\(\theta\)` value with associated CMC count equal to `\(\text{CMC}_{\max}\)`.
+ - On the other hand, the known non-match plots show `\(\theta\)` values that are much more diffuse. In particular, the range of `\(\theta\)` values with associated CMC count greater than or equal to `\(\text{CMC}_{\text{high}}\)` is much larger than that of the known match pair.
+---
+# "Improved" method
+
+- If high CMC `\(\theta\)` values are too diffuse, then assign CMC count based on initially proposed method
+
+- Otherwise, count CMCs within `theta_thresh` of the `\(\theta\)` value with associated count equal to `\(\text{CMC}_{\max}\)` for both comparison directions
+
+
+```r
+comparison2 &lt;- cmcR::cellCCF_bothDirections(fadul1.1,fadul1.2,
+                                            thetas = seq(-30,30,by = 3),
+                                            cellNumHoriz = 8,
+                                            regionToCellProp = 4,
+                                            minObservedProp = .15,
+                                            centerCell = "individualCell",
+                                            scaleCell = "individualCell")
+
+cmc &lt;- comparison2 %&gt;%
+  cmcR::cmcFilter_improved(consensus_function = median,
+                           ccf_thresh = .6,
+                           dx_thresh = 10,
+                           theta_thresh = 3)
+```
+
+???
+- This slide shows code to both compare a pair of cartridge case scans in both directions and apply this improved logic to the result. 
+---
+# "Improved" method
+
+
+```r
+cmc$finalCMCs #24 final CMCs
+```
+&lt;div style="border: 1px solid #ddd; padding: 0px; overflow-y: scroll; height:400px; "&gt;&lt;table class="table" style="margin-left: auto; margin-right: auto;"&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellNum &lt;/th&gt;
+   &lt;th style="text-align:left;position: sticky; top:0; background-color: #FFFFFF;"&gt; cellID &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; fft.ccf &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dx &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; dy &lt;/th&gt;
+   &lt;th style="text-align:right;position: sticky; top:0; background-color: #FFFFFF;"&gt; theta &lt;/th&gt;
+   &lt;th style="text-align:left;position: sticky; top:0; background-color: #FFFFFF;"&gt; comparison &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 3 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7437182 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4507050 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 221 - 293 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7853873 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4948444 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 5 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 294 - 366 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7735092 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4413118 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 6 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 1 - 73, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6601086 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1962291 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 16 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 10 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8483261 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4057049 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 145, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8761507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4696951 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 14 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 15 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 74 - 146, x = 440 - 512 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6946025 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3438510 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 17 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 147 - 219, x = 1 - 74 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8276735 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3770155 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 146 - 218, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8425936 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3939444 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 23 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 147 - 219, x = 440 - 512 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7678974 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2731040 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 2 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 147 - 219, x = 513 - 585 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6083081 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3199504 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 25 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 220 - 292, x = 1 - 74 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7826609 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4365688 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -15 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 32 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 219 - 290, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6411207 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2681380 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 33 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 293 - 365, x = 1 - 74 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6062741 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2538272 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 5 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 34 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 293 - 365, x = 75 - 147 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6729459 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2479810 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 39 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 436 - 507 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.8061693 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.5552012 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -13 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 18 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 40 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 291 - 363, x = 508 - 579 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6037441 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2091788 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -6 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 42 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 74 - 145 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6672655 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2651846 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 9 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 43 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 366 - 438, x = 148 - 220 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.7259801 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2886908 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 7 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 46 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 364 - 435, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6185624 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2421062 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -3 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 11 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 52 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 436 - 508, x = 219 - 290 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6039683 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3461244 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -27 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 55 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 439 - 511, x = 440 - 512 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6140005 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2896296 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 12 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_2to1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 59 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 146 - 218 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6225886 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.3405154 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -8 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -4 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -21 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:right;"&gt; 62 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; y = 509 - 580, x = 363 - 435 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.6374991 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.4133909 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; -24 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; comparison_1to2 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;&lt;/div&gt;
+
+???
+- This slide then shows the "final" CMCs based on this improved method for the particular pair of cartridge case scans we've been considering.
+---
+
+```r
+cmcR::cmcPlot(fadul1.1,cmcDF = cmc$initialCMCs[[1]],method = "ggplot2")
+```
+
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-37-1.png" style="display: block; margin: auto;" /&gt;
+
+
+```r
+cmcR::cmcPlot(fadul1.1,cmcDF = cmc$finalCMCs,method = "ggplot2")
+```
+
+&lt;img src="zemmelsCCpresentation_files/figure-html/unnamed-chunk-38-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide provides visualizations of the initial and final CMCs using the `cmcPlot` function.
+---
+class: inverse, middle, center
+
+# Results &amp; Discussion
+
+???
+- We have now covered the implementation of the CMC method that is available in the `cmcR` package.
+- From here, we will discuss how well results from this implementation compare to results provided from authors at NIST.
+
+---
+#Results &amp; Discussion
+
+- Fadul et al. 40 cartridge case scans&lt;sup&gt;[1]&lt;/sup&gt;
+    
+    - 63 known match (KM) pairs, 717 known non-match (KNM) pairs
+
+.footnote[
+[1] Fadul Hernandez, et al. [Fad+11]
+]
+
+--
+
+- Goal: Separation between KM and KNM CMC count distributions
+ 
+ &lt;!-- - Common metric is distance between max KNM count and min KM count --&gt;
+
+--
+
+- Sensitivity analysis under various pre, inter, and post-processing conditions
+
+--
+
+- Promising conditions are those used in this presentation
+
+???
+- Many authors in the CMC literature compare their results using a set of 40 cartridge case scans - 63 KMs and 717 KNMs
+- We also used these data to compare our results
+- Our overall goal is to attain complete separation between the KM and KNM CMC count distributions. This corresponds to perfect classification of the KM and KNM cartridge case pairs.
+- Additionally, we were interested in determining how sensitive our implementation of the CMC method is to various pre, inter, and post-processing conditions.
+ - These results are only briefly discussed here, but are provided in greater detail in the paper associated with this presentation.
+- We used the same conditions used throughout this presentation when performing comparisons. 
+
+---
+#Initially proposed method results
+
+&lt;img src="images/initialCMCdistributions.png" width="395" style="display: block; margin: auto;" /&gt;
+
+&lt;img src="images/initialCMCroc.png" width="395" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide shows the CMC count distribution for known match and known non-match pairs under the same conditions used in this presentation.
+- We can see the KNM distribution in orange is located at low CMC values while the KM distribution in purple is more spread around higher CMC values.
+ - There is some overlap between the KM and KNM distribution. In particular, KM pairs being assigned few CMCs.
+- The ROC curve shown is constructed by changing the minimum CMC count needed to classify a pair as "matching." Visually, we can think of a vertical line moving horizontally along the CMC distribution where we call any pairs to the left of the line "non-matches" and to the right "matches."
+- We can see because of the overlap between the KM and KNM distributions, perfect classification is not attainable.
+
+---
+# Initially proposed method results
+
+- Perfect classification achieved under other alignment parameter thresholds&lt;sup&gt;[1]&lt;/sup&gt;
+
+.footnote[
+[1] See appendix slides
+
+[2] Tong Song, et al. [Ton+14], Chen Song, et al. [Che+17]
+]
+
+--
+
+- Other authors achieve better separation of KM and KNM CMC distributions&lt;sup&gt;[2]&lt;/sup&gt;
+
+&lt;img src="images/chenInitialCMCdistribution.PNG" width="390" style="display: block; margin: auto;" /&gt;
+
+
+???
+- It should be noted that although perfect classification was not attained under these particular conditions, the appendix shows an example of thresholds under which perfect classification was achieved.
+- Additionally, it should also be noted that the original authors were able to achieve better separation between the KM and KNM distributions. We can likely chalk that up to their particular implementation.
+
+---
+# Initially proposed method sensitivity
+
+&lt;img src="images/initialCMCResidualsBP16_250plot_corr30-90_trans10-30_noAUC.png" width="634" style="display: block; margin: auto;" /&gt;
+
+???
+- These plots show the CMC distributions under various combination of translation and ccf thresholds.
+ - From top to bottom the CCF threshold becomes more restrictive. From left to right the translation threshold becomes less restrictive.
+ - So the most restrictive conditions are those in the bottom left corner and least in the top right.
+- These plots can be used to visually determine which thresholds yield the most promising results.
+- For example, the plot on the previous page fits between the second and third row in the first column.
+- The ROC curves associated with these 20 plots are given in the appendix.
+
+---
+#Improved method results
+
+&lt;img src="images/finalCMCdistributions.png" width="395" style="display: block; margin: auto;" /&gt;
+
+&lt;img src="images/finalCMCroc.png" width="395" style="display: block; margin: auto;" /&gt;
+
+???
+- This slide shows results for the improved method.
+ - The major take aways from this are that (1) perfect classification is achieved, as indicated by the ROC curve.
+ - However, both KNM and KM pairs are more often assigned a higher CMC value. This means more true *and* false positives.
+
+---
+#Improved method results
+
+- Improved method tends to assign higher CMC count to both KM and KNM
+
+--
+
+- More "false positive" CMCs assigned to KNM than other authors&lt;sup&gt;[1]&lt;/sup&gt;
+
+&lt;img src="images/chenFinalCMCdistribution.PNG" width="524" style="display: block; margin: auto;" /&gt;
+
+
+.footnote[
+[1] Chen Song, et al. [Che+17]
+]
+
+???
+
+---
+# Improved method sensitivity
+
+&lt;img src="images/cmcResidualsBP16_250_corr30-90_trans10-30_noAUC.png" width="634" style="display: block; margin: auto;" /&gt;
+
+???
+- This plot shows the behavior the "final" CMC distributions across various threshold combinations.
+- We can see the improved method tends to give more CMCs to known matches, but also to known non-matches. In particular, a second "mode" of CMCs can be seen for the known non-matches in the first two rows of plots.
+ - These can be chalked up to known non-matches that passed the additional "high CMC" criterion discussed previously. It's possible that small tweaks to the current implementation of the method may reduce if not eliminate these "false positives."
+
+---
+# Results &amp; Discussion
+
+- Perfect classification achieved using both methods
+
+ - Dependent on alignment parameter thresholds
+ 
+ - Other authors able to achieve better separation
+ 
+
+--
+ 
+- See manuscript associated with this presentation for a deeper discussion on sensitivity of implementation.
+--
+
+
+- Explore small changes to methodology (e.g., parameter tuning) in future
+
+---
+class: inverse, middle, center
+
+# Conclusions &amp; Future Work
+
+---
+#Conclusions
+
+- Results indicate a close implementation of proposed CMC methods
+
+- Main issues related to separation between KM and KNM distributions
+
+--
+
+- Tuning of pre, inter, and post-processing conditions will undoubtedly lead to results closer to those of other authors
+
+--
+
+- Conditions used in this presentation are current `cmcR` package defaults
+
+---
+#Future Work
+
+- **Short-term:**
+
+    - `R` Journal submission
+
+    - `cmcR` package submission to CRAN
+
+- **Longer-term:**
+
+    - CMC method improvements:
+     - techniques for dealing with `NA`s
+     - better classification diagnostics
+     - implementation of closed-source methods
+
+    - Principled approach to quantifying and/or modeling similarity
+
+---
+#References
+Chen, Z, J. Song, et al. (2017). "A convergence algorithm for correlation
+of breech face images based on the congruent matching cells (CMC)
+method". In: _Forensic Science International_ 280, pp. 213-223. DOI:
+[10.1016/j.forsciint.2017.08.033](https://doi.org/10.1016%2Fj.forsciint.2017.08.033).
+
+Fadul, T., G. Hernandez, et al. (2011). _An Empirical Study to Improve
+the Scientific Foundation of Forensic Firearm and Tool Mark
+Identification Utilizing 10 Consecutively Manufactured Slides_.
+
+Fischler, M. A. and R. C. Bolles (1981). "Random Sample Consensus: A
+Paradigm for Model Fitting with Applications to Image Analysis and
+Automated Cartography". In: _Commun. ACM_ 24.6, p. 381â€“395. DOI:
+[10.1145/358669.358692](https://doi.org/10.1145%2F358669.358692).
+
+Song, J. (2013). "Proposed "NIST Ballistics Identification System (NBIS)"
+Based on 3D Topography Measurements on Correlation Cells". In: _American
+Firearm and Tool Mark Examiners Journal_ 45.2, p. 11.
+
+---
+#References (cont'd.)
+
+Tai, X. H. and W. F. Eddy (2018). "A Fully Automatic Method for Comparing
+Cartridge Case Images,". In: _Journal of Forensic Sciences_ 63.2, pp.
+440-448. DOI:
+[10.1111/1556-4029.13577](https://doi.org/10.1111%2F1556-4029.13577).
+
+Tong, M, J. Song, et al. (2015). "An Improved Algorithm of Congruent
+Matching Cells (CMC) Method for Firearm Evidence Identifications". In:
+_Journal of Research of the National Institute of Standards and
+Technology_ 120, p. 102. DOI:
+[10.6028/jres.120.008](https://doi.org/10.6028%2Fjres.120.008).
+
+Tong, M, J. Song, et al. (2014). "Fired Cartridge Case Identification
+Using Optical Images and the Congruent Matching Cells (CMC) Method". In:
+_Journal of Research of the National Institute of Standards and
+Technology_ 119, p. 575. DOI:
+[10.6028/jres.119.023](https://doi.org/10.6028%2Fjres.119.023).
+
+
+---
+
+class: center, middle
+
+# Questions?
+
+---
+class: center, middle
+
+# Thank you!
+
+---
+class: center, inverse, middle
+
+# Appendix
+
+---
+# Initially proposed method perfect classif.
+
+&lt;img src="images/initialCMCdistributions_perfectClassification.png" width="395" style="display: block; margin: auto;" /&gt;
+
+&lt;img src="images/initialCMCroc_perfectClassification.png" width="395" style="display: block; margin: auto;" /&gt;
+
+---
+# Initial method CMC dist'n sensitivity
+
+&lt;img src="images/initialCMCResidualsBP16_250plot_corr30-90_trans10-30_noAUC.png" width="634" style="display: block; margin: auto;" /&gt;
+
+---
+# Initial method ROC curve sensitivity
+
+&lt;img src="images/roc_initialCMC_residualsBP16-250_corr30-90_trans10-30.png" width="634" style="display: block; margin: auto;" /&gt;
+
+
+---
+# Improved method CMC dist'n sensitivity
+
+&lt;img src="images/cmcResidualsBP16_250_corr30-90_trans10-30_noAUC.png" width="634" style="display: block; margin: auto;" /&gt;
+
+---
+# Improved method ROC curve sensitivity
+
+&lt;img src="images/roc_residualsBP16-250.png" width="634" style="display: block; margin: auto;" /&gt;
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"highlightStyle": "github",
+"highlightLines": true,
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();
+// adds .remark-code-has-line-highlighted class to <pre> parent elements
+// of code chunks containing highlighted lines with class .remark-code-line-highlighted
+(function(d) {
+  const hlines = d.querySelectorAll('.remark-code-line-highlighted');
+  const preParents = [];
+  const findPreParent = function(line, p = 0) {
+    if (p > 1) return null; // traverse up no further than grandparent
+    const el = line.parentElement;
+    return el.tagName === "PRE" ? el : findPreParent(el, ++p);
+  };
+
+  for (let line of hlines) {
+    let pre = findPreParent(line);
+    if (pre && !preParents.includes(pre)) preParents.push(pre);
+  }
+  preParents.forEach(p => p.classList.add("remark-code-has-line-highlighted"));
+})(document);</script>
+
+<script>
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>

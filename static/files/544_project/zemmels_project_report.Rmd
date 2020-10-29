@@ -1,0 +1,1280 @@
+---
+title: "Bayesian analysis of the chemical composition of float glass"
+author: "Joe Zemmels"
+date: "4/13/2020"
+output: pdf_document
+geometry: margin=.5in
+fontsize: 12pt
+urlcolor: blue
+header-includes:
+  - \usepackage{amsmath,amsthm,amssymb,mathtools,enumitem,listings,graphicx,tabu,multirow,subcaption,hyperref,multicol}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE,warning = FALSE,fig.height = 7,fig.width = 8,fig.align = "center")
+library(tidyverse)
+library(rstan)
+library(bayesplot)
+
+set.seed(4142020)
+```
+
+```{r glassDataCleaning}
+glass <- read_csv("all_glass.csv") %>%
+  select(-X1) %>%
+  mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$")),
+                                         unlist(str_extract_all(pane,pattern = "^B[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^BA[A-R]$"))))))
+
+dates <- data.frame(pane = glass %>%
+                      pull(pane) %>% 
+                      unique(),
+                    date = lubridate::mdy(c("1/3/17",
+                                            "1/3/17",
+                                            "1/4/17",
+                                            "1/4/17",
+                                            "1/5/17",
+                                            "1/5/17",
+                                            "1/6/17",
+                                            "1/6/17",
+                                            "1/7/17",
+                                            "1/7/17",
+                                            "1/8/17",
+                                            "1/8/17",
+                                            "1/9/17",
+                                            "1/10/17",
+                                            "1/13/17",
+                                            "1/14/17",
+                                            "1/14/17",
+                                            "1/15/17",
+                                            "1/16/17",
+                                            "1/16/17",
+                                            "1/17/17",
+                                            "1/17/17",
+                                            "1/18/17",
+                                            "1/19/17",
+                                            "1/20/17",
+                                            "1/20/17",
+                                            "1/21/17",
+                                            "1/21/17",
+                                            "1/22/17",
+                                            "1/24/17",
+                                            "1/24/17",
+                                            "12/5/16",
+                                            "12/5/16",
+                                            "12/7/16",
+                                            "12/7/16",
+                                            "12/7/16",
+                                            "12/7/16",
+                                            "12/9/16",
+                                            "12/9/16",
+                                            "12/9/16",
+                                            "12/9/16",
+                                            "12/12/16",
+                                            "12/12/16",
+                                            "12/14/16",
+                                            "12/15/16",
+                                            "12/15/16",
+                                            "12/16/16",
+                                            "12/16/16")))
+
+glassLong <- glass %>%
+  left_join(dates,by = "pane") %>%
+  select(-Rep) %>%
+  mutate_at(4:21,~ log(.)) %>%
+  group_by(Company,pane,fragment) %>%
+  summarise_all(.funs = mean) %>%
+  filter(Company == "CompanyA") %>%
+  ungroup() %>%
+  mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$")))))) %>%
+  pivot_longer(cols = 4:21,
+               names_to = "element",
+               values_to = "concentration") %>%
+  select(-Company)
+
+#Pane AAB is missing data from fragments 7 and 9. We can simulate from a normal
+#centered at element-specific average and scaled to element-specific sd to fill
+#in these missing values (which will really help coding in RSTAN below). The
+#commented ggplot call below seems to show that the simulated values tend to be
+#in the bulk of the data, which is good
+
+paneAABmissingSim <- glassLong %>%
+  filter(pane == "AAB") %>%
+  group_by(element) %>%
+  summarise(meanConcentration = mean(concentration),
+            sdConcentration = sd(concentration)) %>%
+  pmap_dfr(~ {
+    data.frame(pane = "AAB",
+               date = lubridate::ymd("2017-01-16"),
+               element = ..1,
+               "7" =  rnorm(n = 1,mean = ..2,sd = ..3),
+               "9" = rnorm(n = 1,mean = ..2,sd = ..3),
+               stringsAsFactors = FALSE)
+  }) %>%
+  pivot_longer(cols = c(X7,X9),names_to = "fragment",values_to = "concentration") %>%
+  mutate(fragment = as.numeric(str_extract(fragment,"7|9")))
+
+glassLong <- bind_rows(glassLong,paneAABmissingSim) %>%
+   mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$"))))))
+
+# glassLong %>%
+#   filter(pane == "AAB") %>%
+#   mutate(indic = factor(ifelse(fragment == 7 | fragment == 9, 1,0))) %>%
+#   ggplot(aes(x = concentration)) +
+#   geom_histogram(aes(fill = indic),bins = 24) +
+#   facet_wrap(~element,scales = "free")
+```
+
+
+## Introduction
+
+Determining whether two fragments of glass originate from the same pane is a useful endeavor in the field of forensics. For example, matching a fragment of glass taken from a crime scene to one found on a subject would provide evidence that the suspect was at the scene of the crime at one point in time. It is possible to measure the elemental composition of a particular fragment of glass. The elemental compositon can be measured for a variety of elements (Sodium (NA), Titanium (TI), etc.). It is widely believed in the forensics community that two fragments of glass can be "matched" to the same pane  based on the similarity of their elemental compositions. Park et al. (2018, 2020) collected data from two glass manufacturing companies on the the elemental compositions of panes of float glass (a particular method of manufacturing glass) sampled over a period of a few weeks. They used the data to demonstrate the efficacy of supervised learning methods to classify glass fragments as matching or non-matching. 
+
+Park & Carriquiry (2018) briefly discuss the apparent time-dependent structure of the elemental concentrations for the panes of glass sampled from the two companies. For example, for many of the elements for which the concentration was measured, panes sampled closer together in time appear to have more similar concentrations than panes sampled further apart in time. The analysis in this report will focus on describing the variability of the elemental concentrations over time for one of the two companies.
+
+## Data
+
+The data come from two float glass manufacturers, referred as Company A and Company B in the dataset, taken over a period of 3 weeks (January 3rd - January 24, 2017) and 2 weeks (December 5th - December 16th, 2016). On nearly every day during these two periods, two panes of glass were collected from both sides of a glass "ribbon," which is the form that float glass is commonly manufactured into. This resulted in a total of 31 panes from Company A, denoted $\{AA,AB,...,AAR\}$ in the data, and 17 panes from Company B, denoted $\{BA,...,BR\}$. Many of the Company B panes were sampled at disparate times. An example of the recorded concentrations of the element iron ($^\text{57}$Fe) for panes sampled from Company B is shown in Figure 1 (with analogous plots of other elements looking similar). We can see that the sampling rate of the panes is infrequent and the number of panes sampled per sampling event unbalanced. Thus, for the sake of the analysis, we will only focus on the elemental concentrations for panes sampled from Company A.
+          
+Each pane was broken into fragments and 24 fragments were randomly selected. These are indexed 1-24 in the data. For 21 of these 24 fragments, the elemental compositon was repeatedly measured 5 times. The remaining 3 fragments had their elemental compositon measured 20 times. Thus for each pane of glass, we have 165 elemental concentration measurements. Each of these "reps" are represented as a row in the dataset. The elemental concentrations were recorded in parts/million (micrograms/gram) for the 18 elements. These 18 elements are: lithium ($^\text{7}$Li), sodium ($^\text{23}$Na), magnesium ($^\text{25}$Mg), aluminum ($^\text{27}$Al), silicon ($^\text{29}$Si), potassium ($^\text{39}$K), calcium ($^\text{42}$Ca and $^\text{43}$Ca), titanium ($^\text{49}$Ti), manganese ($^\text{55}$Mn), iron ($^\text{57}$Fe), rubidium ($^\text{85}$Rb), strontium ($^\text{88}$Sr), zirconium ($^\text{90}$Zr), tin ($^\text{118}$Sn), barium ($^\text{137}$Ba), lanthanum ($^\text{139}$La), cerium ($^\text{140}$Ce), neodymium ($^\text{146}$Nd), hafnium ($^\text{178}$Hf) and lead ($^\text{208}$Pb).
+          
+Park & Carriquiry (2018) consider the average log-transformed elemental concentration measurement values for each fragment when constructing features for their supervised learning classifiers. That is, they first log-transform the measurements and then take an average per fragment. The same will be done for this analysis. A plot of densities of the log-transformed averaged elemental concentrations for the fragments from three of the 18 total elements are in Figure 2. We will focus on only three elements for this analysis because considering all 18 was deemed too computationally intensive (for my computer, at least). The plots in Figure 2 show the distribution of elemental concentrations for each pane. This plot is meant to convey that the concentrations of certain elements vary considerably between panes. For modeling purposes, it would be interesting to determine how time-dependent these concentrations are.
+          
+Plotting the log-transformed elemental concentrations by pane uncovers the temporal structure for some of these elements discussed in Park & Carriquiry (2018) and Park & Tyner (2019). Figure 4 shows a scatterplot of the log-transformed mean elemental concentrations for each of the 24 fragments sampled from each pane against the date in which these fragments were sampled. The solid curves connect the within-date averages. For certain elements, such as Hafnium ($^\text{178}$Hf) and Zirconium ($^\text{90}$Zr), we can see what appears to be a trend. This may indicate, for example, that the availability of these elements changed over the period of time for which samples were taken from Company A.
+          
+```{r oldPlot1,include=FALSE,eval=FALSE}
+#Legacy -- back when I thought I should use both Company A and B data
+
+axisLabels <- bind_rows(companyAconcentrations,companyBconcentrations) %>%
+  mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$")),
+                                         unlist(str_extract_all(pane,pattern = "^B[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^BA[A-R]$"))))),
+         t = ifelse(Company == "CompanyB",t + 31,t)) %>%
+  pull(pane) %>%
+  levels() %>%
+  unique()
+
+bind_rows(companyAconcentrations,companyBconcentrations) %>%
+  mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$")),
+                                         unlist(str_extract_all(pane,pattern = "^B[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^BA[A-R]$"))))),
+         t = ifelse(Company == "CompanyB",t + 31,t)) %>%
+  ggplot() +
+  geom_point(aes(x = t,y = concentration,colour = Company),alpha = .5) +
+  geom_line(data = bind_rows(companyAconcentrations %>%
+                               group_by(pane,t,element,`function`) %>%
+                               summarise(mean_t = mean(concentration),
+                                         median_t = median(concentration)) %>%
+                               select(-c(`function`)) %>%
+                               pivot_longer(cols = c(mean_t,median_t),names_to = "function") %>%
+                               ungroup() %>%
+                               mutate(Company = rep("CompanyA",times = nrow(.))),
+                             companyBconcentrations %>%
+                               group_by(pane,t,element,`function`) %>%
+                               summarise(mean_t = mean(concentration),
+                                         median_t = median(concentration)) %>%
+                               select(-c(`function`)) %>%
+                               pivot_longer(cols = c(mean_t,median_t),names_to = "function") %>%
+                               ungroup() %>%
+                               mutate(Company = rep("CompanyB",times = nrow(.)))) %>%
+              filter(`function` == "mean_t") %>%
+              mutate(pane = factor(x = pane,
+                                   levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                                     unlist(str_extract_all(pane,pattern = "^AA[A-R]$")),
+                                                     unlist(str_extract_all(pane,pattern = "^B[A-Y]$")),
+                                                     unlist(str_extract_all(pane,pattern = "^BA[A-R]$"))))),
+                     t = ifelse(Company == "CompanyB",t + 31,t)),
+            aes(x = t,y = value,linetype = Company),
+            size = 1.2) +
+  facet_wrap(~ element,scales = "free_y",nrow = 6) +
+  theme_bw() +
+  ggtitle("Elemental concentrations by pane for Companies A & B (log scale)") +
+  xlab("Pane") +
+  scale_x_continuous(breaks = c(seq(1,48,10),48),labels = c(axisLabels[seq(1,48,10)],axisLabels[48])) +
+  ylab("Concentration (parts/million)") +
+  theme(legend.position = "bottom") +
+  scale_colour_manual(values = c("darkorange","purple")) +
+  geom_vline(xintercept = 31.5)
+```
+          
+## Methods
+          
+As discussed above, there may be some time dependency for some of the elemental concentrations. A temporal model, such as an autoregressive model, for the elemental concentrations may be useful for explaining the behavior. We can compare these results to a model fit without assuming a temporal structure (similar to what is used in Park & Carriquiry (2018)). We will thus divide our analysis into an atemporal, "pane-specific" model and an autoregressive model. Note that we do not have observations from every day of the 3 week period during which samples were taken. We will discuss how to deal with these missing observations below. Samples from the posterior will be simulated using the `rstan` package. We will assess convergence using standard tools such as $\hat{R}$ and effective sample size as well as diagnostics available for the specific "No U-Turn Sampler" (NUTS, Hoffman and Gelman, 2014) used by Stan if divergent transitions occur.
+
+### Pane-specific model
+
+Adapting notation from Park & Carriquiry (2018), we will let $\bar{y}_{ijk\cdot}$ be the mean log of the observed concentration of the $i$th element across all measurements of the $k$th fragment from the $j$th pane, $i = 1,2,3$ (Iron, Hafnium, Zirconium, respectively), $j = 1,...,31$, $k = 1,...,24$, where the dot indicates averaging over a fourth index associated with measurement (which we're not considering for this analysis). We will associate with the mean log concentrations a collection of random variables $\{\bar{Y}_{ijk\cdot}\}$ where for $k = 1,...,24$,
+\begin{align*}
+\bar{Y}_{ijk} | \mu_{ij}, \sigma_{i}^2 &\overset{ind}{\sim} N(\mu_{ij}, \sigma_{i}^2) \\
+\mu_{ij} &\overset{d}{=} \eta_i + \tau_i \theta_{ij} \\
+\eta_i &\overset{ind}{\sim} p(\eta_i) \propto 1 \\
+\tau_i^2 &\overset{ind}{\sim} p(\tau_i^2) \propto I(\tau_i > 0) \\
+\theta_{ij} &\overset{iid}{\sim} N(0,1) \\
+\sigma_i^2 &\overset{iid}{\sim} \text{Inv}-\chi^2(1,1).
+\end{align*}
+The interpretation of the data model specified is that the log mean concentration of each fragment differs by location based on the element/pane combination considered, yet will differ in scale only by which element is considered (constant variance within-element). Note that $\mu_{ij}$ is defined in this way because another model in which $\mu_{ij} \overset{ind}{\sim} N(\eta_i,\tau_i^2)$ was explored yet was found to result in divergent transitions during the Hamiltonian Monte Carlo sampling procedure. Specifically, the phenomenon known as "Neal's funnel" was clearly observed when plotting $\tau_1^2$ against any $\mu_{1j}$ for $j = 1,...,31$. The parameterization used above was found to be more successful.
+
+<!-- Note that because we are specifying a model for the elemental concentrations per fragment, a distribution is induced upon random variables associated with the elemental concentrations per pane, denoted $\{\bar{Y}_{ij\cdot \cdot}\}$ say, to be -->
+<!-- $$ -->
+<!-- \bar{Y}_{ij\cdot \cdot} \overset{ind}{\sim} N\left(\mu_{ij},\frac{\sigma_i^2}{24}\right). -->
+<!-- $$ -->
+
+### Autoregressive model
+
+We are interested in comparing how the "pane-specific" model described above compares to a model in which elemental concentrations depend on each other through time. Tweaking the notational conventions introduced for the pane-specific model, we will now let $\bar{y}_{ijk\cdot}(t)$ denote the log concentration of the observed concentration of the $i$th element averaged over all measurements of the $k$th fragment from the $j$th pane on the $t$th day, $i = 1,2,3$, $j = 1,...,34$, $k = 1,...,24$, $t = 1,...,22$. Note that $j$ is now indexed from $1$ to $34$ because, as discussed below, data will be simulated for days in which no panes were sampled. We will associate with these observed mean log concentrations a set of random variables, $\{\bar{Y}_{i j k \cdot}(t)\}$ in which we assume for $k = 1,...,24$, $t = 2,...,22$
+\begin{align*}
+\bar{Y}_{i j k \cdot}(t) | \mu_{ij}(t), \sigma_i^2 &\overset{ind}{\sim} N(\mu_{ij}(t) , \sigma_i^2) \\
+\mu_{ij}(t) &\overset{d}{=} \eta_{i} + \gamma_i(t) + \tau_i \theta_{ij} \\
+\eta_i &\overset{ind}{\sim} p(\eta_i) \propto 1 \\
+\gamma_i(t) &\overset{d}{=} \alpha_i \gamma_i(t-1) + \epsilon_i(t)\\
+\alpha_i &\overset{iid}{\sim} p(\alpha_i) \propto 1 \\
+\epsilon_i(t) &\overset{iid}{\sim} N(0,.1) \\
+\tau_i &\overset{ind}{\sim} p(\tau_i) \propto I(\tau_i > 0) \\
+\theta_{ij} &\overset{iid}{\sim} N(0,1) \\
+\sigma_i^2 &\overset{iid}{\sim} \text{Inv}-\chi^2(1,1).
+\end{align*}
+For $t = 1$, since we don't have a previous observation to condition on, we will assume that $\mu_{ij}(1) \overset{d}{=} \eta_{i} + \epsilon_i(1) + \tau_i \theta_{ij}$. Note that this model is effectively equivalent to the pane-specific model if $\alpha_i = 0, i = 1,2,3$; that is, there is no dependence on time. This model is meant to reflect the observation made that the expected elemental concentrations for particular days may depend on each other through time. As noted above, there are 3 days, 1/11, 1/12, and 1/23, during which a pane was not sampled. We will simulate a pane-worth of data ($24 \cdot 3$ observations) for each of these days from a normal with expectation equal to the linearly interpolated mean at these days and variance based on the posterior mean $\sigma_i^2$ values estimated from the pane-specific model. After some exploration, it was determined that the estimated posterior mean $\sigma_1^2$ (i.e., the iron concentration variance) was inflated due to a handful of extreme observations that we can see in the time series plot in Figure 3. Thus, we scaled the variances down for the estimated posterior mean $\sigma_1^2$ value until the simulated values "looked like" the observed iron concentration values (which is rather hacky, so I would be interested in determining a better way to deal with this).
+
+## Results
+
+### Pane-specific model
+
+```{r pane-specificModel_badParam, eval=FALSE,include=FALSE}
+# The model below ends up struggling with "divergent transitions," indicating
+# essentially that the chain isn't able to visit the entire space. Although some
+# success was found by increasing adapt_delta closer to 1, I determined that the
+# issue lies with the specification of tau[1] (the variance on the first
+# element's mu terms). In particular, plotting log(tau[1]) against some of
+# element 1's mus yielded a near-textbook example of "Neal's funnel." Basically,
+# the shape indicates that certain regions of the parameter space are rather
+# narrow relative to the rest of the space -- specifically for small tau[1]
+# values. Essentially, the chain does a bad job of traversing this narrow region
+# because it simultaneously needs to traverse the wider rest of the parameter
+# space but can't do both at once (without increasing the adapt_delta parameter,
+# which effectively reduces the step-size taken from one iteration to the other
+# -- but this increases computational time). This is almost exactly the same
+# behavior in this vignette:
+# https://mc-stan.org/bayesplot/articles/visual-mcmc-diagnostics.html.
+
+# The vignette recommends re-parameterizing  the mus to simplify the geometry of
+# the space. That is done below.
+
+stanDat <- list(nFragment = 24,
+                nElement = 3,
+                nPane = 31,
+                concentration = glassLong %>%
+                  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+                  arrange(element,pane,fragment) %>%
+                  pull(concentration))
+
+paneSpecificModel <- "
+data {
+  int<lower=0> nElement;
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  vector[nElement*nFragment*nPane] concentration;
+}
+parameters {
+  vector[nPane*nElement] mu;
+  vector<lower=0>[nElement] sigmaSq;
+  vector[nElement] eta;
+  vector<lower=0>[nElement] tau;
+}
+model {
+  for (i in 1:nElement){
+  tau[i] ~ cauchy(0,1);
+  sigmaSq[i] ~ scaled_inv_chi_square(1,1);
+  
+    for(j in 1:nPane){
+    mu[(i-1)*31 + j] ~ normal(eta[i],tau[i]);
+    
+      for(k in 1:nFragment){
+       concentration[(i-1)*(31*24) + (j-1)*24 + k] ~ normal(mu[(i-1)*31 + j],sqrt(sigmaSq[i]));
+      }
+    }
+  }
+}
+"
+
+m1 <- stan_model(model_code = paneSpecificModel)
+m1Samples <- sampling(m1, stanDat, c("mu","sigmaSq","eta","tau"), iter = 10000,control = list(adapt_delta = .8),seed = 4142020)
+
+#visualize tau[1] against one of the mus whose variance it dictates -- we very
+#clearly see the Neal's funnel shape
+mcmc_scatter(
+  m1Samples,
+  pars = c("mu[31]", "tau[1]"),
+  transform = list("tau[1]" = "log"), # can abbrev. 'transformations'
+  np = nuts_params(m1Samples),
+  size = 1
+)
+```
+
+```{r pane-specificModel_goodParam,cache=TRUE,include=FALSE}
+stanDat <- list(nFragment = 24,
+                nElement = 3,
+                nPane = 31,
+                concentration = glassLong %>%
+                  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+                  arrange(element,pane,fragment) %>%
+                  pull(concentration))
+
+paneSpecificModel <- "
+data {
+  int<lower=0> nElement;
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  vector[nElement*nFragment*nPane] concentration;
+}
+parameters {
+  vector<lower=0>[nElement] sigmaSq;
+  
+  vector[nElement] eta;
+  
+  vector<lower=0>[nElement] tau;
+  vector[nPane*nElement] theta;
+}
+transformed parameters{
+ vector[nPane*nElement] mu;
+ 
+ for(i in 1:nElement){
+   for(j in 1:nPane){
+    mu[(i-1)*31 + j] = eta[i] + tau[i]*theta[(i-1)*31 + j];
+   }
+ }
+}
+model {
+  for (i in 1:nElement){
+  sigmaSq[i] ~ scaled_inv_chi_square(1,1);
+  
+    for(j in 1:nPane){
+    theta[(i-1)*31 + j] ~ normal(0,1);
+    
+      for(k in 1:nFragment){
+       concentration[(i-1)*(31*24) + (j-1)*24 + k] ~ normal(mu[(i-1)*31 + j],sqrt(sigmaSq[i]));
+      }
+    }
+  }
+}
+"
+
+m1 <- stan_model(model_code = paneSpecificModel)
+m1Samples <- sampling(m1, 
+                      stanDat, 
+                      c("mu","sigmaSq","eta","tau"), 
+                      iter = 10000,
+                      control = list(adapt_delta = .8),
+                      seed = 4142020)
+```
+
+
+For the pane-specific model a total of 4 chains were run each with 5000 burn-in and 5000 inferential samples. After re-parameterizing the model, no divergent transitions occurred indicating that traversal of the parameter space was successful. We can see from Figure 5 that the scale reduction factor values are all well-behaved indicating that the chains mixed well. Traceplots (not shown for sake of space) provided no clear indication of convergence failure.
+
+The effective sample sizes for some of the parameters, specifically those in Table 1, indicate some autocorrelation among the inferential samples. We can see in particular that $\eta_2$ and $\eta_3$, which act as the expectations on the data model means for the Hafnium and Zirconium concentrations, have a small effective sample size. However, these do still "pass" the rule-of-thumb discussed by Gelman et al. in BDA3 pg. 288 of running a chain until the effective sample size of all parameters of interest exceed $10c$ for $c$ chains. We can also see based on the ACF plots in for $\eta_2, \eta_3, \tau_2$, and $\tau_3$ shown in Figure 6 that the sample autocorrelation for these parameters does not decay as quickly as we would like. The Discussion section below discusses this further.
+
+The estimated densities of the $\mu_{ij}$ terms based on the inferential samples are shown in Figure 7. Given the uninformative priors placed on the parameters governing the $\mu_{ij}$s, it makes sense that the densities are located similar to those of the observed data for each pane as shown in Figure 3. The estimated densities for the "element-specific" parameters (i.e., parameters indexed only by $i \in \{1,2,3\}$) are shown in Figure 8. While improper uniform priors were placed on $\eta_i$ and $\tau_i, i = 1,2,3$, we can see that the shapes of the distribution are very much unimodal (although an odd "bump" can be seen in the plot of $\tau_1$ near 0).
+
+### Autoregressive model
+
+```{r simulateMissingValues, include=FALSE,eval=FALSE}
+#simulate pane data from missing dates by (1) linearly interpolating the sample
+#means for missing dates and then (2) simulating normal data based on
+#interpolated mean and sigmaSq[i] value from pane-specific mean model above.
+
+glassLong <- bind_rows(glassLong %>%
+            filter(element %in% c("Fe57","Hf178","Zr90")),
+          glassLong %>%
+            filter(element %in% c("Fe57","Hf178","Zr90")) %>%
+            group_by(date,element) %>%
+            summarise(concentration = mean(concentration)) %>%
+            ungroup() %>%
+            group_by(element) %>%
+            group_split() %>%
+            map(function(elemConc){
+              data.frame(date = seq(min(elemConc$date),max(elemConc$date),by = "day")) %>%
+                full_join(elemConc %>%
+                            select(-element),
+                          by = "date") %>%
+                ts() %>%
+                imputeTS::na_interpolation() %>%
+                as.data.frame() %>%
+                mutate(date = data.frame(date = seq(min(elemConc$date),max(elemConc$date),by = "day")) %>%
+                         full_join(elemConc %>%
+                                     select(-element),
+                                   by = "date") %>% 
+                         pull(date))
+            }) %>%
+            bind_rows() %>%
+            filter(date %in% lubridate::ymd(c("2017-01-11","2017-01-12","2017-01-23"))) %>%
+            mutate(element = rep(c("Fe57","Hf178","Zr90"),each = 3),
+                   sigmaSq = rep(extract(m1Samples,"sigmaSq") %>%
+                                   as.data.frame() %>%
+                                   summarise_all(~ mean(.)) %>%
+                                   t() %>%
+                                   .[,1],each = 3),
+                   pane = rep(c("CCC","DDD","EEE"),times = 3))  %>%
+            pmap_dfr(~ data.frame(concentration = rnorm(n = 24,mean = ..2,sd = ifelse(..3 == "Fe57",sqrt(..4/4),..4))) %>%
+                       mutate(date = rep(..1,times = nrow(.)),
+                              element = rep(..3,times = nrow(.)),
+                              pane = rep(..5,times = nrow(.)),
+                              fragment = rep(1,times = nrow(.))))) %>%
+  arrange(date,element,pane,fragment) %>%
+  mutate(pane = factor(x = pane,
+                       levels = {bind_rows(glassLong %>%
+                                             filter(element %in% c("Fe57","Hf178","Zr90")),
+                                           glassLong %>%
+                                             filter(element %in% c("Fe57","Hf178","Zr90")) %>%
+                                             group_by(date,element) %>%
+                                             summarise(concentration = mean(concentration)) %>%
+                                             ungroup() %>%
+                                             group_by(element) %>%
+                                             group_split() %>%
+                                             map(function(elemConc){
+                                               data.frame(date = seq(min(elemConc$date),max(elemConc$date),by = "day")) %>%
+                                                 full_join(elemConc %>%
+                                                             select(-element),
+                                                           by = "date") %>%
+                                                 ts() %>%
+                                                 imputeTS::na_interpolation() %>%
+                                                 as.data.frame() %>%
+                                                 mutate(date = data.frame(date = seq(min(elemConc$date),max(elemConc$date),by = "day")) %>%
+                                                          full_join(elemConc %>%
+                                                                      select(-element),
+                                                                    by = "date") %>% 
+                                                          pull(date))
+                                             }) %>%
+                                             bind_rows() %>%
+                                             filter(date %in% lubridate::ymd(c("2017-01-11","2017-01-12","2017-01-23"))) %>%
+                                             mutate(element = rep(c("Fe57","Hf178","Zr90"),each = 3),
+                                                    sigmaSq = rep(extract(m1Samples,"sigmaSq") %>%
+                                                                    as.data.frame() %>%
+                                                                    summarise_all(~ mean(.)) %>%
+                                                                    t() %>%
+                                                                    .[,1],each = 3),
+                                                    pane = rep(c("CCC","DDD","EEE"),times = 3))  %>%
+                                             pmap_dfr(~ data.frame(concentration = rnorm(n = 24,mean = ..2,sd = sqrt(..4/4))) %>%
+                                                        mutate(date = rep(..1,times = nrow(.)),
+                                                               element = rep(..3,times = nrow(.)),
+                                                               pane = rep(..5,times = nrow(.)),
+                                                               fragment = rep(1,times = nrow(.))))) %>%
+                           arrange(date,element,pane,fragment)  %>% group_by(pane,date) %>% tally() %>%
+                           arrange(date) %>%
+                           pull(pane)}))
+```
+
+```{r timeTrendModel, eval=FALSE,include=FALSE}
+#time trend model that I feel I should abandon
+
+timeTrendModel <- "
+data {
+  int<lower=0> nElement;
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  vector[nElement*nPane] time;
+  int<lower=0> nDays;
+  vector[nElement*nFragment*nPane] concentration;
+}
+transformed data{
+ 
+}
+parameters {
+  //observation-level variance term
+  vector<lower=0>[nElement] sigmaSq;
+  
+  //Time regression coefficients
+  vector[nElement] beta0;
+  vector[nElement] beta1;
+  vector[nElement] beta2;
+  
+  vector<lower=0>[nElement] tau; //variance term on mu_{ij}
+  vector[nPane*nElement] theta; //notational trick for computational purposes
+  
+  vector[nElement] alpha; //AR(1) coefficient
+  vector[nElement*nDays] epsilon; //AR(1) variance term
+}
+transformed parameters{
+ //vector[nElement*nDays] gamma; //determined by alpha and epsilon
+ vector[nElement*nPane] mu; //determined by betas, gamma, tau, and theta
+
+  for(i in 1:nElement){
+   for(j in 1:nPane){
+   //RStan doesn't allow integer valued vectors OR typecasting real values to integers -- so this will have to do
+   //for(k in 1:nDays){
+   //   if(k == 1){
+   //   gamma[k] = epsilon[k];
+   // }
+   // if(k != 1 && (time[(i-1)*34 + j] - k) == 0){
+   //   gamma[k] = alpha[i]*gamma[k-1] + epsilon[k];
+   // }
+     
+     mu[(i-1)*34 + j] = beta0[i] + beta1[i]*time[(i-1)*34 + j] + beta2[i]*time[(i-1)*34 + j]*time[(i-1)*34 + j] + tau[i]*theta[(i-1)*34 + j];
+     
+     //mu[(i-1)*34 + j] = beta0[i] + beta1[i]*time[(i-1)*34 + j] + beta2[i]*time[(i-1)*34 + j]*time[(i-1)*34 + j] + gamma[k] + tau[i]*theta[(i-1)*34 + j];
+   //}
+   }
+  }
+}
+model {
+  for (i in 1:nElement){
+     sigmaSq[i] ~ scaled_inv_chi_square(1,1);
+  
+     for(j in 1:nPane){
+      theta[(i-1)*34 + j] ~ normal(0,1);
+      
+      epsilon[1:(nElement*nDays)] ~ normal(0,1);
+    
+      for(k in 1:nFragment){
+      
+       concentration[(i-1)*(34*24) + (j-1)*24 + k] ~ normal(mu[(i-1)*34 + j],sqrt(sigmaSq[i]));
+
+     }
+    }
+   }
+}
+"
+
+stanDat <- list(nFragment = 24,
+                nElement = 3,
+                nPane = 34,
+                time = glassLong %>%
+                  select(pane,date) %>% 
+                  distinct() %>% 
+                  mutate(time = {glassLong %>% 
+                      select(pane,date) %>% 
+                      distinct() %>% 
+                      group_by(date) %>% 
+                      tally() %>% 
+                      mutate(num = seq_along(1:nrow(.))) %>% 
+                      pmap(~rep(..3,times = ..2)) %>%
+                      unlist()}) %>% 
+                  pmap_dfr(~ data.frame(pane = rep(..1,times = 3),
+                                        date = rep(..2,times = 3),
+                                        time = rep(..3,times = 3),
+                                        stringsAsFactors = FALSE)) %>%
+                  pull(time) %>%
+                  as.integer(),
+                nDays = 22,
+                concentration = glassLong %>%
+                  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+                  arrange(element,pane,fragment) %>%
+                  pull(concentration))
+
+timeTrendM <- stan_model(model_code = arModel)
+timeTrendSamples <- sampling(arM, 
+                      stanDat, 
+                      c("beta0","beta1","beta2","sigmaSq","mu","tau"),
+                      iter = 20000,
+                      control = list(adapt_delta = .8),
+                      seed = 4142020)
+```
+
+```{r timeTrendModelDiagnostics, include=FALSE,eval=FALSE}
+rhat <- rhat(timeTrendSamples)
+
+mcmc_rhat(rhat)
+
+neff <- neff_ratio(timeTrendSamples)
+
+mcmc_neff_hist(neff)
+
+summary(timeTrendSamples)
+```
+
+```{r brokenARmodel,eval=FALSE,include=FALSE}
+#old version (that didn't work) just in case I need to go back to an old version
+
+arModel <- "
+functions {
+   // if(r_in(3,{1,2,3,4})) will evaluate as 1
+  int r_in(int pos,int[] pos_var) {
+   
+    for (p in 1:(size(pos_var))) {
+       if (pos_var[p]==pos) {
+       // can return immediately, as soon as find a match
+          return 1;
+       } 
+    }
+    return 0;
+  }
+
+  vector repeat_vector(vector input, int reps){
+
+    int index[rows(input) * reps];
+
+    for (i in 1:reps){
+      for (j in 1:rows(input)){       
+        index[j + rows(input) * (i-1)] = j;
+      }
+    }    
+    return(input[index]);
+  }
+}
+
+data {
+  int<lower=0> nElement;
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  vector[nElement*nPane] time;
+  int<lower=0> nDays;
+  vector[nElement*nFragment*nPane] concentration;
+}
+transformed data{
+ int epsilonReps[nDays];
+ // these are the indices of gamma values that should take on the same value as the gamma value immediately before it in the vector of gamma values
+ int gammaRepeats[36];
+ 
+ epsilonReps = {2,2,2,2,2,2,1,1,1,1,1,2,1,2,2,1,1,2,2,1,1,2};
+ gammaRepeats = {2,4,6,8,10,12,19,22,24,28,30,34,36,38,40,42,44,46,53,56,58,62,64,68,70,72,74,76,78,80,87,90,92,96,98,102};
+}
+parameters {
+  //observation-level variance term
+  vector<lower=0>[nElement] sigmaSq;
+  
+  vector[nElement] eta;
+  
+  //Time regression coefficients
+  //vector[nElement] beta0;
+  //vector[nElement] beta1;
+  //vector[nElement] beta2;
+  
+  vector<lower=0>[nElement] tau; //variance term on mu_{ij}
+  vector[nPane*nElement] theta; //notational trick for computational purposes
+  
+  vector<lower=-1,upper=1>[nElement] alpha; //AR(1) coefficient
+  vector[nElement*nDays] epsilon; //AR(1) variance term
+}
+transformed parameters{
+ vector[nElement*nPane] gamma; //determined by alpha and epsilon
+ vector[nElement*nPane] mu; //determined by betas, gamma, tau, and theta
+
+ vector[nElement*nPane] epsilonVec;
+ 
+ //epsilon is a 22*3 length vector representing noise per element per day. We want the same epsilon to be added to either one or two gammas, depending on if we have one or two panes for a particular day. We'll stack (one or) two copies of the epsilon vector for a single day and store all of them in a 34*3 sized vector.
+ // If epsilon is of the form (epsilon_1(1), epsilon_1(2), epsilon_1(3), ..., epsilon_1(22), epsilon_2(1), epsilon_2(2),..., epsilon_3(22))'
+  //  then epsilonVec should look like (epsilon_1(1), epsilon_1(1), epsilon_1(2), epsilon_1(2), ..., epsilon_1(22),epsilon_2(1), epsilon_2(1),...,epsilon_22(3))'. That is, where pieces of epsilon have been copied depending on the number of panes sampled on a particular day
+ for(i in 1:nElement){
+  for(j in 1:nDays){
+   epsilonVec[((i-1)*22 + j):((i-1)*22 + j + epsilonReps[j] - 1)] = repeat_vector(epsilon[((i-1)*22 + j):((i-1)*22 + j)], epsilonReps[j]);
+  }
+ }
+ 
+ print(epsilonVec);
+ 
+ for(i in 1:nElement){
+   for(j in 1:nPane){
+   //RStan doesn't allow integer valued vectors OR typecasting real values to integers -- so this will have to do
+   if(r_in(((i-1)*34 + j),{1,35,69})){
+    gamma[(i-1)*34 + j] = epsilonVec[(i-1)*34 + j]; //based on the ordering of the concentrations, these indices correspond to pane AA
+   }
+   //the gamma vector should be ordered first by element and then by day within element and then by repetition per pane (if applicable) -- so gamma_1(1), gamma_1(1), gamma_1(2), gamma_1(2), etc.
+   if(r_in(((i-1)*34 + j),gammaRepeats)){
+     gamma[(i-1)*34 + j] = gamma[(i-1)*34 + j - 1]; //if we are considering a day in which we have two panes sampled, then we want the gamma values associated with the second pane to get copies of the gamma values of the first pane.
+    }
+   if((((i-1)*34 + j) != 1) && !(r_in(((i-1)*34 + j),gammaRepeats))){
+     gamma[(i-1)*34 + j] = alpha[i]*gamma[(i-1)*34 + j - 1] + epsilonVec[(i-1)*34 + j]; //otherwise, we want it to define a new gamma variable based on an AR(1) process
+   }
+   
+   //print(gamma[(i-1)*34 + j]);
+  
+   mu[(i-1)*34 + j] = eta[i] + gamma[(i-1)*34 + j] + tau[i]*theta[(i-1)*34 + j];
+     //I initially tried to fit a model with both a quadratic time trend component and AR(1) term. However, this ended up taking *way* to much time to fit on my computer and had a lot of convergence issues. With more time/computational resources I could have probably fit a more robust model
+   }
+ }
+}
+model {
+ epsilon[1:(nElement*nDays)] ~ normal(0,.1);
+ theta[1:(nElement*nPane)] ~ normal(0,1);
+
+  for (i in 1:nElement){
+     sigmaSq[i] ~ scaled_inv_chi_square(1,1);
+  
+     for(j in 1:nPane){
+    
+      for(k in 1:nFragment){
+      
+       concentration[(i-1)*(34*24) + (j-1)*24 + k] ~ normal(mu[(i-1)*34 + j],sqrt(sigmaSq[i]));
+
+     }
+    }
+   }
+}
+"
+
+dummyModel <- stan_model(model_code = arModel)
+
+sampling(dummyModel, 
+         stanDat, 
+         c("eta","alpha","gamma","sigmaSq","mu","tau","epsilon","theta"),
+         iter = 1,chains = 1)
+```
+
+```{r verySlowARModel, include=FALSE,eval=FALSE}
+arModel <- "
+functions {
+   // if(r_in(3,{1,2,3,4})) will evaluate as 1
+  int r_in(int pos,int[] pos_var) {
+   
+    for (p in 1:(size(pos_var))) {
+       if (pos_var[p]==pos) {
+       // can return immediately, as soon as find a match
+          return 1;
+       } 
+    }
+    return 0;
+  }
+
+  vector repeat_vector(vector input, int reps){
+
+    int index[rows(input) * reps];
+
+    for (i in 1:reps){
+      for (j in 1:rows(input)){       
+        index[j + rows(input) * (i-1)] = j;
+      }
+    }    
+    return(input[index]);
+  }
+}
+
+data {
+  int<lower=0> nElement;
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  vector[nElement*nPane] time;
+  int<lower=0> nDays;
+  vector[nElement*nFragment*nPane] concentration;
+}
+transformed data{
+ int epsilonReps[nDays];
+ // these are the indices of gamma values that should take on the same value as the gamma value immediately before it in the vector of gamma values
+ int gammaRepeats[36];
+ 
+ epsilonReps = {2,2,2,2,2,2,1,1,1,1,1,2,1,2,2,1,1,2,2,1,1,2};
+ gammaRepeats = {2,4,6,8,10,12,19,22,24,28,30,34,36,38,40,42,44,46,53,56,58,62,64,68,70,72,74,76,78,80,87,90,92,96,98,102};
+}
+parameters {
+  //observation-level variance term
+  vector<lower=0>[nElement] sigmaSq;
+  
+  vector[nElement] eta;
+  
+  vector<lower=0>[nElement] tau; //variance term on mu_{ij}
+  vector[nPane*nElement] theta; //notational trick for computational purposes
+  
+  vector<lower=-1,upper=1>[nElement] alpha; //AR(1) coefficient
+  vector[nElement*nDays] epsilon; //AR(1) variance term
+}
+transformed parameters{
+ vector[nElement*nPane] gamma; //determined by alpha and epsilon
+ vector[nElement*nPane] mu; //determined by betas, gamma, tau, and theta
+
+ vector[nElement*nPane] epsilonVec;
+ 
+ //epsilon is a 22*3 length vector representing noise per element per day. We want the same epsilon to be added to either one or two gammas, depending on if we have one or two panes for a particular day. We'll stack (one or) two copies of the epsilon vector for a single day and store all of them in a 34*3 sized vector.
+ // If epsilon is of the form (epsilon_1(1), epsilon_1(2), epsilon_1(3), ..., epsilon_1(22), epsilon_2(1), epsilon_2(2),..., epsilon_3(22))'
+  //  then epsilonVec should look like (epsilon_1(1), epsilon_1(1), epsilon_1(2), epsilon_1(2), ..., epsilon_1(22),epsilon_2(1), epsilon_2(1),...,epsilon_22(3))'. That is, where pieces of epsilon have been copied depending on the number of panes sampled on a particular day
+ for(i in 1:nElement){
+  for(d in 1:nDays){
+   if(d == 1){
+    epsilonVec[((i-1)*34 + 1):((i-1)*34 + 2)] = repeat_vector(epsilon[((i-1)*22 + 1):((i-1)*22 + 1)], epsilonReps[1]);
+   }
+   else if(((i-1)*34 + 1 + sum(epsilonReps[1:(d-1)])) == 103){ //running into index issues at the tail-end of the vector, should be 102 as last index
+    epsilonVec[102] = epsilon[66];
+   }
+   else{
+    epsilonVec[((i-1)*34 + 1 + sum(epsilonReps[1:(d-1)])):((i-1)*34 + epsilonReps[d] + sum(epsilonReps[1:(d-1)]))] = repeat_vector(epsilon[((i-1)*22 + d):((i-1)*22 + d)], epsilonReps[d]);
+   }
+  }
+ }
+ 
+ for(i in 1:nElement){
+  for(j in 1:nPane){
+    //RStan doesn't allow integer valued vectors OR typecasting real values to integers -- so this will have to do
+    //based on the ordering of the concentrations, these indices correspond to pane AA
+   if(r_in(((i-1)*34 + j),{1,35,69})){
+    gamma[(i-1)*34 + j] = epsilonVec[(i-1)*34 + j];
+   }
+   //the gamma vector should be ordered first by element and then by day within element and then by repetition per pane (if applicable) -- so gamma_1(1), gamma_1(1), gamma_1(2), gamma_1(2), etc.
+   if(r_in(((i-1)*34 + j),gammaRepeats)){
+     gamma[(i-1)*34 + j] = gamma[(i-1)*34 + j - 1]; //if we are considering a day in which we have two panes sampled, then we want the gamma values associated with the second pane to get copies of the gamma values of the first pane.
+    }
+   if((((i-1)*34 + j) != 1) && !(r_in(((i-1)*34 + j),gammaRepeats))){
+     gamma[(i-1)*34 + j] = alpha[i]*gamma[(i-1)*34 + j - 1] + epsilonVec[(i-1)*34 + j]; //otherwise, we want it to define a new gamma variable based on an AR(1) process
+   }
+  
+   mu[(i-1)*34 + j] = eta[i] + gamma[(i-1)*34 + j] + tau[i]*theta[(i-1)*34 + j];
+     //I initially tried to fit a model with both a quadratic time trend component and AR(1) term. However, this ended up taking *way* to much time to fit on my computer and had a lot of convergence issues. With more time/computational resources I could have probably fit a more robust model
+   }
+ }
+}
+model {
+ epsilon[1:(nElement*nDays)] ~ normal(0,.1);
+ theta[1:(nElement*nPane)] ~ normal(0,1);
+ sigmaSq[1:nElement] ~ scaled_inv_chi_square(1,1);
+
+  for(i in 1:nElement){
+     for(j in 1:nPane){
+      for(k in 1:nFragment){
+       concentration[(i-1)*(34*24) + (j-1)*24 + k] ~ normal(mu[(i-1)*34 + j],sqrt(sigmaSq[i]));
+     }
+    }
+   }
+}
+"
+
+stanDat <- list(nFragment = 24,
+                nElement = 3,
+                nPane = 34,
+                time = glassLong %>%
+                  select(pane,date) %>%
+                  distinct() %>%
+                  mutate(time = {glassLong %>%
+                      select(pane,date) %>%
+                      distinct() %>%
+                      group_by(date) %>%
+                      tally() %>%
+                      mutate(num = seq_along(1:nrow(.))) %>%
+                      pmap(~rep(..3,times = ..2)) %>%
+                      unlist()}) %>%
+                  pmap_dfr(~ data.frame(pane = rep(..1,times = 3),
+                                        date = rep(..2,times = 3),
+                                        time = rep(..3,times = 3),
+                                        stringsAsFactors = FALSE)) %>%
+                  mutate(element = rep(c("Hf178","Zr90","Fe57"),
+                                       times = nrow(.)/3)) %>%
+                  arrange(element,date,pane) %>%
+                  pull(time) %>%
+                  as.integer(),
+                epsilonReps = glassLong %>%
+                  select(pane,date) %>% 
+                  distinct() %>% 
+                  mutate(time = {glassLong %>% 
+                      select(pane,date) %>% 
+                      distinct() %>% 
+                      group_by(date) %>% 
+                      tally() %>% 
+                      mutate(num = seq_along(1:nrow(.))) %>% 
+                      pmap(~rep(..3,times = ..2)) %>%
+                      unlist()}) %>% 
+                  pmap_dfr(~ data.frame(pane = rep(..1,times = 3),
+                                        date = rep(..2,times = 3),
+                                        time = rep(..3,times = 3),
+                                        stringsAsFactors = FALSE)) %>%
+                  group_by(time) %>%
+                  tally() %>%
+                  pull(n),
+                nDays = 22,
+                concentration = glassLong %>%
+                  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+                  arrange(element,pane,fragment) %>%
+                  pull(concentration))
+
+arM <- stan_model(model_code = arModel)
+arSamples <- sampling(arM, 
+                      stanDat, 
+                      c("eta","alpha","gamma","sigmaSq","mu","tau","epsilon","theta"),
+                      iter = 10000,
+                      control = list(adapt_delta = .8),
+                      seed = 4142020)
+```
+
+```{r workingARModel, cache=TRUE,include=FALSE}
+arModel <- "
+data {
+  int<lower=0> nFragment;
+  int<lower=0> nPane;
+  
+  vector[nFragment*nPane] concIron;
+  vector[nFragment*nPane] concHaf;
+  vector[nFragment*nPane] concZirc;
+}
+transformed data{
+ int indicesToReplace[12];
+
+ indicesToReplace = {2,4,6,8,10,12,19,22,24,28,30,34};
+}
+parameters {
+  //observation-level noise term
+  real<lower=0> sigmaSqIron;
+  real<lower=0> sigmaSqHaf;
+  real<lower=0> sigmaSqZirc;
+  
+  real etaIron;
+  real etaHaf;
+  real etaZirc;
+  
+  real<lower=0> tauIron;
+  real<lower=0> tauHaf;
+  real<lower=0> tauZirc;
+  
+  //notational trick for computational purposes
+  vector[nPane] thetaIron;
+  vector[nPane] thetaHaf;
+  vector[nPane] thetaZirc;
+  
+  //AR(1) coefficient
+  real<lower=-1,upper=1> alphaIron;
+  real<lower=-1,upper=1> alphaHaf;
+  real<lower=-1,upper=1> alphaZirc;
+  
+  //AR(1) noise term
+  vector[nPane] epsilonIron_dummy;
+  vector[nPane] epsilonHaf_dummy;
+  vector[nPane] epsilonZirc_dummy;
+}
+transformed parameters{
+ //determined by alpha and epsilon and previous gamma term
+ vector[nPane] gammaIron;
+ vector[nPane] gammaHaf;
+ vector[nPane] gammaZirc;
+ 
+ //determined by eta, gamma, tau, and theta
+ vector[nPane] muIron;
+ vector[nPane] muHaf;
+ vector[nPane] muZirc;
+ 
+ //AR(1) noise term
+  vector[nPane] epsilonIron;
+  vector[nPane] epsilonHaf;
+  vector[nPane] epsilonZirc;
+  
+  epsilonIron = epsilonIron_dummy;
+  epsilonHaf = epsilonHaf_dummy;
+  epsilonZirc = epsilonZirc_dummy;
+  
+  for(rep in indicesToReplace){
+   epsilonIron[rep] = epsilonIron[rep - 1];
+   epsilonHaf[rep] = epsilonHaf[rep - 1];
+   epsilonZirc[rep] = epsilonZirc[rep - 1];
+  }
+ 
+ gammaIron[1] = epsilonIron[1];
+ gammaHaf[1] = epsilonHaf[1];
+ gammaZirc[1] = epsilonZirc[1];
+ for(j in 2:nPane){
+  gammaIron[j] = alphaIron*gammaIron[j - 1] + epsilonIron[j];
+  gammaHaf[j] = alphaHaf*gammaHaf[j - 1] + epsilonHaf[j];
+  gammaZirc[j] = alphaZirc*gammaZirc[j - 1] + epsilonZirc[j];
+ }
+ 
+ //re-write any gammas that correspond to panes sampled on the same day as the pane before it
+ for(rep in indicesToReplace){
+  gammaIron[rep] = gammaIron[rep - 1];
+  gammaHaf[rep] = gammaHaf[rep - 1];
+  gammaZirc[rep] = gammaZirc[rep - 1];
+ }
+ 
+ muIron = etaIron + gammaIron + tauIron*thetaIron;
+ muHaf = etaHaf + gammaHaf + tauHaf*thetaHaf;
+ muZirc = etaZirc + gammaZirc + tauZirc*thetaZirc;
+}
+model {
+ sigmaSqIron ~ scaled_inv_chi_square(1,1);
+ sigmaSqHaf ~ scaled_inv_chi_square(1,1);
+ sigmaSqZirc ~ scaled_inv_chi_square(1,1);
+
+ thetaIron ~ normal(0,1);
+ thetaHaf ~ normal(0,1);
+ thetaZirc ~ normal(0,1);
+
+ //some of the elements of these dummy vectors are to be replaced in the transformed parameters block
+ epsilonIron_dummy ~ normal(0,.1);
+ epsilonHaf_dummy ~ normal(0,.1);
+ epsilonZirc_dummy ~ normal(0,.1);
+
+ for(j in 1:nPane){
+  for(k in 1:nFragment){
+   concIron[(j-1)*24 + k] ~ normal(muIron[j],sqrt(sigmaSqIron));
+   concHaf[(j-1)*24 + k] ~ normal(muHaf[j],sqrt(sigmaSqHaf));
+   concZirc[(j-1)*24 + k] ~ normal(muZirc[j],sqrt(sigmaSqZirc));
+  }
+ }
+}
+"
+
+glassConcSplit <- glassLong %>%
+  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+  arrange(element,pane,fragment) %>% 
+  ungroup() %>% 
+  group_by(element) %>% 
+  group_split() %>% 
+  map(~ .$concentration) %>% 
+  setNames(c("iron","hafnium","zirconium"))
+
+stanDat <- list(nFragment = 24,
+                nPane = 34,
+                concIron = glassConcSplit$iron,
+                concHaf = glassConcSplit$hafnium,
+                concZirc = glassConcSplit$zirconium)
+
+arM <- stan_model(model_code = arModel)
+arSamples <- sampling(arM, 
+                      stanDat, 
+                      c(paste0(c("eta","alpha","gamma","sigmaSq","mu","tau","epsilon","theta"),"Iron"),
+                        paste0(c("eta","alpha","gamma","sigmaSq","mu","tau","epsilon","theta"),"Haf"),
+                        paste0(c("eta","alpha","gamma","sigmaSq","mu","tau","epsilon","theta"),"Zirc")),
+                      iter = 10000,
+                      control = list(adapt_delta = .8),
+                      seed = 4142020)
+```
+
+Similar to the pane-specific model, 4 chains with 5000 burn-in and 5000 inferential samples were used to fit the AR(1) model. No divergent transitions occurred and, as we can see by Figure 9, the scale reduction factors all look passable. Again, traceplots did not indicate convergence failure. Table 2 shows which parameters had an associated effective sample size ratio less than .1. The effective sample sizes for the other model parameters were at least greater than .01 and all parameters again passed the rule-of-thumb for effective sample size discussed in BDA3. This indicates that samples for certain parameters may not be particularly "trustworthy." This will be expanded upon in the Discussion section below. Figure 10 shows the posterior element/pane-specific credible intervals over time. Again, we see that the $\mu_{ij}$s tend to be located near their associated element/pane-specific observations.
+
+Figure 11 shows the distributions of the 3 elements' AR(1) parameters, $\alpha_i$. Recall that these were constrained to be between -1 and 1 (inducing a stationary AR(1) process). We can see that the distribution of the AR(1) parameter associated with Iron is fairly diffuse on this interval while those of Hafnium and Zirconium are quite concentrated near 1. This makes sense if we interpret the trajectory of the mean concentrations shown in Figure 3 as that of a near-random walk temporal process. These results indicate that there *is* some temporal dependence for some elemental concentrations, which answers our question of interest. We also now have the ability to better describe this dependence through use of the autoregressive model. Whether such a model generalizes to other elements would be interesting to explore furter.
+
+## Discussion
+
+As discussed above, the ACF plots for the Hafnium and Zirconium low-level parameters under the pane-specific model do not decay as quickly as we would like. Alongside the fact that $\tau_2$ and $\tau_3$ also have relatively low effective sample sizes, we may take this as a sign that the $\mu_{ij}$s are misspecified under the pane-specific model, at least for $i = 2,3$. We can cleary see in the time series plots in Figure 4 that Hafnium and Zirconium concentrations exhibit some pattern in time, so it makes sense that enforcing a common mean structure in $\eta_2$ and $\eta_3$ may not "agree" with the observed Hafnium and Zirconium data. Similarly, for the autoregressive model, the effective sample size seems to be particularly small for paramaters associated with data that aren't "agreeable" with what the parameter represents. To illustrate this, consider Table 2 containing the only parameters for which the effective sample size ratio was less than .1. We can see that they are associated with Iron which, if you recall, exhibited the least obvious temporal pattern out of the three elements considered. Again, the effective sample size may be an indication of data behavior that our model fails to adequately describe.
+
+As noted above, the AR(1) coefficients for Hafnium and Zirconium seem to indicate extreme positive dependence between mean concentrations over time. We could, however, try to also explain these data using, say, a quadratic regression on time (such a model as well as a hybrid AR(1) and regression model were attempted, but found to be too computationally taxing for my computer). The key difference between these two models, I believe, is what we want the "data generating mechanism" to be represented as. The method by which these *float glass* panes are manufactured yields a continuous "ribbon" of glass that is eventually cut into various sizes. Perhaps the raw materials fed into the furnace that produces this ribbon contained a considerable amount of Hafnium and Zirconium at the beginning of the sampling period that began to "run out" near the end of the sampling period. It might make sense then to use an AR model representing the idea that, for example, using up Hafnium-rich raw material on one day may *cause* there to be less Hafnium in manufactured panes on the next day. Regression parameters with respect to time may not have as simple a physical interpretation but may "explain" the data better overall. Exploring other temporal models may be interesting future work. Additionally, as noted in Park & Carriquiry (2018), the concentrations of certain elements appear to be highly correlated with each other (e.g., Neodymium tends to show up in high concentrations with Hafnium). Another interesting area for exploration might be to model this between-element dependence using, say, a vector autoregression (the `bvar` package performs Bayesian vector autoregression).
+
+Lastly, while we have determined and described some of the temporal structure in the data, we haven't *really* determined which proposed model actually fits the data better. Determining Bayes Factors from MCMC output isn't particularly straightforward, but the `bridgesampling` package does allow for some estimation based on `rstan` (among other packages) output. This may be interesting to look into as well to make more formal, hypothesis test-based conclusions about which model fits the data best.
+
+## References
+
+- Gelman, A, J. Carlin, et al. (2013). Bayesian Data Analysis, Third Edition. Chapman & Hall/CRC Texts in Statistical Science. Taylor & Francis. ISBN: 978-1-4398-4095-5.
+
+- Homan, M. D. and A. Gelman (2014). "The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo". In: J. Mach. Learn. Res. 15.1, p. 1593â€“1623.
+
+- Park, S. and A. Carriquiry (2019). "Learning algorithms to evaluate forensic glass evidence". In: Ann. Appl. Stat. 13.2, pp. 1068-1102. DOI: 10.1214/18-AOAS1211.
+
+- Park, S, A. Carriquiry, et al. (2020). "A database of elemental compositions of architectural float glass samples measured by LA-ICP-MS". In: Data in Brief 30, p. 105449. DOI: https://doi.org/10.1016/j.dib.2020.105449.
+
+- Park, S. and S. Tyner (2019). "Evaluation and comparison of methods for forensic glass source conclusions". In: Forensic Science International 305, p. 110003. DOI: https://doi.org/10.1016/j.forsciint.2019.110003.
+
+## Tables
+
+```{r}
+neff_paneSpecific <- neff_ratio(m1Samples)
+
+mcmc_neff_data(neff_paneSpecific) %>%
+  head() %>%
+  knitr::kable(caption = "Parameters with low effective sample size under pane-specific model.")
+```
+
+
+```{r eval=FALSE}
+neff_arSamples <- neff_ratio(arSamples)
+
+mcmc_neff_data(neff_arSamples) %>%
+  mutate(param = str_split(parameter,"\\[") %>% map_chr(~ .[[1]]))  %>%
+  group_by(param,description) %>%
+  tally() %>%
+  arrange(description) %>%
+  filter(description == "N[eff]/N <= 0.1")
+```
+
+```{r}
+data.frame("param" = c("epsilonIron","etaIron","gammaIron"),
+           "description" = c("N[eff]/N <= 0.1","N[eff]/N <= 0.1","N[eff]/N <= 0.1"),
+           "n" = c(28,1,34)) %>%
+  knitr::kable(caption = "Parameters with low effective sample size under autoregressive model.")
+```
+
+## Figures
+
+```{r warning=FALSE,message=FALSE,echo=FALSE,fig.align='center',fig.height=2,fig.cap="Iron concentrations from Company B over time"}
+glass %>%
+  left_join(dates,by = "pane") %>%
+  select(-Rep) %>%
+  mutate_at(4:21,~ log(.)) %>%
+  group_by(Company,pane,fragment) %>%
+  summarise_all(.funs = mean) %>%
+  filter(Company == "CompanyB") %>%
+  ungroup() %>%
+  mutate(pane = factor(x = pane,
+                       levels = unique(c(unlist(str_extract_all(pane,pattern = "^A[A-Y]$")),
+                                         unlist(str_extract_all(pane,pattern = "^AA[A-R]$")))))) %>%
+  pivot_longer(cols = 4:21,
+               names_to = "element",
+               values_to = "concentration") %>%
+  select(-Company) %>%
+  filter(element %in% "Fe57") %>%
+  ggplot() +
+  geom_point(aes(x = date,y = concentration),alpha = .5) +
+  geom_line(data = glass %>%
+              left_join(dates,by = "pane") %>%
+              select(-Rep) %>%
+              mutate_at(4:21,~ log(.)) %>%
+              group_by(Company,pane,fragment) %>%
+              summarise_all(.funs = mean) %>%
+              filter(Company == "CompanyB") %>%
+              ungroup() %>%
+              mutate(pane = factor(x = pane,
+                                   levels = unique(c(unlist(str_extract_all(pane,
+                                                                            pattern = "^A[A-Y]$")),
+                                                     unlist(str_extract_all(pane,
+                                                                            pattern = "^AA[A-R]$")))))) %>%
+              pivot_longer(cols = 4:21,
+                           names_to = "element",
+                           values_to = "concentration")%>%
+              filter(element %in% "Fe57") %>%
+              group_by(date,element) %>%
+              summarise(mean_t = mean(concentration)),
+            aes(x = date,y = mean_t),
+            size = 2) +
+  facet_wrap(~ element,scales = "free_y",nrow = 3) +
+  theme_bw() +
+  ggtitle("Company B iron concentration over time (log scale)") +
+  xlab("Time (days)") +
+  ylab("Concentration (parts/million)")
+```
+
+```{r fig.height=3.5,fig.align='center',fig.cap="Company A element-specific concentration distributions for three elements."}
+glassLong %>%
+  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+  ggplot(aes(x = concentration)) +
+  geom_density(alpha = .5) +
+  facet_wrap(~element,scales = "free",nrow = 6) +
+  theme_bw() +
+  ggtitle("Elemental concentration distributions for company A (log scale)") +
+  xlab("Concentration (parts/million)") +
+  theme(legend.position = "bottom")
+```
+
+```{r echo=FALSE,fig.height=5,fig.align='center',fig.cap="Company A pane-specific concentration distributions for three elements."}
+glassLong  %>%
+  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+  ggplot(aes(x = concentration,fill = pane)) +
+  geom_density(alpha = .5) +
+  facet_wrap(~element,scales = "free",nrow = 6) +
+  theme_bw() +
+  xlab("Concentration (parts/million)") +
+  ggtitle("Company A elemental conc. distribution per pane (log scale)")
+```
+
+```{r echo=FALSE,fig.height=4,fig.align='center',fig.cap="Company A concentations over time for three elements."}
+glassLong %>%
+  filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+  ggplot() +
+  geom_point(aes(x = date,y = concentration),alpha = .5) +
+  geom_line(data = glassLong %>%
+              filter(element %in% c("Hf178","Zr90","Fe57")) %>%
+              group_by(date,element) %>%
+              summarise(mean_t = mean(concentration)),
+            aes(x = date,y = mean_t),
+            size = 1) +
+  facet_wrap(~ element,scales = "free_y",nrow = 6) +
+  theme_bw() +
+  ggtitle("Company A elemental concentrations over time (log scale)") +
+  xlab("Date") +
+  ylab("Concentration (parts/million)")
+```
+
+```{r fig.height=1.5,fig.align='center',fig.cap="Scale reduction factor values for parameters in pane-specific model."}
+rhat_paneSpecific <- rhat(m1Samples)
+
+mcmc_rhat(rhat_paneSpecific)
+```
+
+```{r fig.height=2.8,fig.align='center',fig.cap="ACF plots for low-level Hafnium and Zirconium parameters in pane-specific model."}
+mcmc_acf(m1Samples,pars = c("eta[2]","eta[3]","tau[2]","tau[3]"))
+```
+
+```{r fig.height=4.8,fig.align='center',fig.cap="Estimated posterior densities for element/pane-specific means under pane-specific model."}
+m1Samples_mu <- extract(m1Samples,c("mu")) %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(),
+               names_to = "param",
+               values_to = "mcSamples") %>%
+  mutate(param = factor(param,
+                        levels = unique(c(unlist(str_extract_all(param,pattern = "^mu.[1-9]$")),
+                                         unlist(str_extract_all(param,pattern = "^mu.[0-9]{2}$")))))) %>%
+  arrange(param) %>%
+  mutate(element = factor(rep(c("Fe57","Hf178","Zr90"),
+                              each = nrow(.)/3)),
+         pane = factor(rep(rep(glassLong %>% 
+                                 filter(!(pane %in% c("CCC","DDD","EEE"))) %>%
+                                 pull(pane) %>% 
+                                 unique(),
+                               each = (nrow(.)/3)/31),times = 3)))
+
+m1Samples_mu %>%
+  ggplot() +
+  geom_density(aes(x = mcSamples,fill = pane),alpha = .5) +
+  facet_wrap(~element,nrow = 3,scales = "free") +
+  theme_bw() +
+  xlab("Concentration (parts/million)") +
+  ggtitle(expression("Posterior distributions for "*mu[ij]*" under pane-specific model"))
+```
+
+```{r fig.height=4,fig.align='center',fig.cap="Estimated posterior densities for element-specific parameters under pane-specific model."}
+m1Samples_other <- extract(m1Samples,c("tau","sigmaSq","eta")) %>%
+  as.data.frame() %>%
+  pivot_longer(cols = everything(),
+               names_to = "param",
+               values_to = "mcSamples") %>%
+  mutate(element = factor(rep(c("Fe57","Hf178","Zr90"),
+                              times = nrow(.)/3)))
+
+m1Samples_other %>%
+  ggplot() +
+  geom_density(aes(x = mcSamples)) +
+  facet_wrap(param~element,nrow = 3,scales = "free") +
+  theme_bw() +
+  ggtitle("Posterior distributions of element-specific parameters")
+```
+
+```{r eval=FALSE,include=FALSE}
+#this chunk isn't running correctly with knitr for some reason...
+# rhat_arSamples <- bayesplot::rhat(arSamples)
+
+# mcmc_rhat(rhat_arSamples)
+```
+
+```{r fig.align='center',fig.cap="Scale reduction factor values for parameters in autoregressive model."}
+knitr::include_graphics("reportImages/arModelRhat.png")
+```
+
+```{r eval=FALSE,include=FALSE}
+# bind_rows(extract(arSamples,c("muIron")) %>%
+#             as.data.frame() %>%
+#             pivot_longer(cols = everything(),
+#                          names_to = "param"),
+#           extract(arSamples,c("muHaf")) %>%
+#             as.data.frame() %>%
+#             pivot_longer(cols = everything(),
+#                          names_to = "param"),
+#           extract(arSamples,c("muZirc")) %>%
+#             as.data.frame() %>%
+#             pivot_longer(cols = everything(),
+#                          names_to = "param")) %>%
+#   mutate(pane = rep(glassLong$pane %>% unique(),times = nrow(.)/34),
+#          element = rep(c("Fe57","Hf178","Zr90"),each = nrow(.)/3)) %>%
+#   left_join(glassLong %>% select(pane,date) %>% distinct(),
+#             by = "pane") %>%
+#   group_by(element,date,pane,param) %>%
+#   summarise(lowerCI = quantile(value,.025),
+#             postMean = mean(value),
+#             upperCI = quantile(value,.975)) %>%
+#   ggplot(aes(x = date,y = postMean,colour = pane)) +
+#   geom_point() +
+#   # ggrepel::geom_label_repel(aes(label = paste0(pane)),xlim = ) +
+#   geom_errorbar(aes(ymin = lowerCI,ymax = upperCI)) +
+#   facet_wrap(~element,scales = "free_y",nrow = 3) +
+#   theme_bw() +
+#   ggtitle("Credible intervals for element/pane-specific means over time under AR(1) model")
+```
+
+```{r fig.align='center',fig.cap="Posterior element/pane-specific credible intervals for data model expectations under autoregressive model."}
+knitr::include_graphics("reportImages/arCredibleIntervals.png")
+```
+
+```{r eval=FALSE,include=FALSE}
+mcmc_areas(arSamples,pars = c(paste0("alphaIron"),paste0("alphaHaf"),paste0("alphaZirc")))
+```
+
+```{r fig.align='center',fig.cap="Posterior distributions of the AR(1) coefficients for the 3 elements"}
+knitr::include_graphics("reportImages/arModelAlphaDistributions.png")
+```
+

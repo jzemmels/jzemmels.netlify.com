@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="" xml:lang="">
+  <head>
+    <title>Bayesian analysis of the chemical composition of float glass</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Joe Zemmels" />
+    <link href="libs/remark-css/default.css" rel="stylesheet" />
+    <link href="libs/remark-css/default-fonts.css" rel="stylesheet" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# Bayesian analysis of the chemical composition of float glass
+## STAT 544 Final Project
+### Joe Zemmels
+### 5/1/20
+
+---
+
+
+
+
+
+
+
+
+
+class: inverse, center, middle
+
+# Introduction
+---
+
+# Forensic glass evidence
+
+&lt;img src="images/glassCollection.jpg" width="332" style="display: block; margin: auto;" /&gt;
+
+- Concentration of elements can uniquely identify a pane of glass
+
+.footnote[
+[Image Source](https://fineartamerica.com/featured/4-collecting-evidence-tek-image.html)
+]
+
+--
+
+- Useful for, e.g., matching a fragment of glass found on suspect to one found on crime scene
+
+--
+
+- How do concentrations vary within manufacturer over time?
+
+???
+- The reason why analyzing glass evidence from a forensics standpoint is that a particular pane of glass can be uniquely identified by its chemical makeup.
+- So if a shard of glass is found on a suspect that has nearly the same chemical makeup as a shard of glass found at a crime scene, then that would provide evidence that the suspect was at the crime scene at some point.
+- An interesting question then to answer is the degree to which panes of glass vary if they came from the same manufacturer. Additionally, if there is any similarity between panes of glass from the same manufacturer that were manufactured at different times.
+- This is the focus of the analysis that I performed.
+
+---
+class: inverse, center, middle
+
+# Data
+
+---
+# Float glass database
+
+- Park &amp; Carriquiry (2018) - panes of *float glass* sampled:
+
+ - 2 manufacturers (Company A and Company B)
+
+ - 3 week and 2 week sampling period, respectivley
+ 
+--
+
+ - 48 5" by 5" panes of glass (31 from A, 17 from B)
+ 
+--
+
+ - 24 fragments taken from each pane
+ 
+--
+
+ - Concentrations of 18 elements repeatedly measured for each fragment
+ 
+     - 5 measurements for 21 fragments, 20 measurements for 3
+     - Measured in parts/million (micrograms/gram)
+     
+--
+     
+- Concentrations used as features in supervised learning classification algorithms
+
+ - Classify two fragments as "matching" (from same pane) or "non-matching"
+
+???
+- Park and Carriquiry collected elemental concentrations from panes of float glass, which is a method by which most modern windows are manufactured.
+- They collected panes from two companies, referred to as A and B in the dataset, over a period of 3 weeks and 2 weeks, respectively.
+- These "panes" were 5 in. by 5 in. cut pieces of glass - 31 were collected from Company A and 17 from Company B
+- To gather elemental concentrations, each pane was broken into fragments. 24 fragments were randomly selected among them.
+- For each fragment, the concentration of 18 elements was measured.
+- Of the 24 sampled fragments, 21 had their elemental concentrations measure 5 times. 3 had their elemental concentrations 20 times. 
+ - This was to ensure a higher level of precision in the measurements.
+ - The concentrations were measured in micrograms per gram of glass - or parts/million
+- Park and Carriquiry were interested in using these elemental concentrations as features in supervised learning algorithms to classify a pair of fragments as either "matching," meaning they originated from the same pane, or "non-matching," meaning they did not.
+ - The goal of this analysis is to analyze the elemental concentrations in a different manner
+
+---
+# Data and computational limitations
+
+- Company B panes sampled at infrequent intervals making temporal analysis difficult
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-2-1.png" style="display: block; margin: auto;" /&gt;
+
+- Analyzing concentrations of all 18 elements was computationally infeasible
+
+--
+
+- Settled on 3 elements, Iron, Hafnium, and Zirconium, for all Company A panes
+
+???
+- Even with the complicated sampling scheme, there are still some issues with data as they relate to the goals of this Bayesian analysis.
+- For one, the panes from Company B were taken at fairly infrequent intervals. An example of the lithium concentrations for various Company B panes are shown. We can see that the observations are fairly spread out and aren't at regular intervals.
+- I initially was hoping to analyze all 18 elemental concentrations from both companies. However, this proved to be computationally infeasible.
+- Instead, I narrowed the scope of the analysis to only consider 3 elements and only the data from Company A since the Company B data would be extra difficult to deal with. These 3 elements are Iron, Hafnium, and Zirconium
+
+---
+# Pane-specific distributions
+
+- Park &amp; Carriquiry (2018) consider `log(concentration)`
+ - Also average repeated measurements per fragment 
+
+--
+&lt;!-- - `\(^\text{57}\)`Fe is Iron, `\(^\text{178}\)`Hf is Hafnium, `\(^\text{90}\)`Zr is Zirconium --&gt;
+
+- Concentrations vary considerably by pane
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-3-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- Note that Park and Carriquiry consider the log of each concentration value and then average these over the reapeated measurements taken per fragment. We will do the same.
+- The plot here shows the distribution of the log concentrations, averaged over repeated measurements for Iron, Hafnium, and Zirconium in that order.
+- An interesting takeaway from this plot is how variable the Hafnium and Zirconium concentrations are even within Company A.
+- If we consider the distributions of concentrations for each pane, we can see some explanation for the variability seen on the previous plot.
+- We can almost see a pattern in the Hafnium and Zirconium plots as we consider pane AA down to pane AAR. Such a pattern is not as visible for Iron, however.
+
+---
+# Elemental concentrations by date
+
+- Sampling period: 1/3/17 to 1/24/17
+ - On 12 days two panes were sampled
+ - On 7 days one pane was sampled
+ - On 3 days zero panes were sampled
+
+--
+
+- Is there a relationship between concentrations over time?
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-4-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- To explain the pattern noticed on the previous slide, consider again the fact that these panes were sampled over a 22 day period. 
+ - On 12 of these days, 2 panes were sampled. 
+ - On 7 of the days, 1 pane was sampled. 
+ - On 3 of the days, 0 panes were sampled
+- We can see a plot of the elemental concentrations per fragment during the 22 day period below.
+- At least for the Hafnium and Zirconium concentrations, there does appear to be a downward trend in the concentrations.
+- This begs the question: might there be some relationship between the elemental concentrations over time?
+
+---
+class: inverse, center, middle
+
+# Methods
+
+???
+- I was interested in fitting two models: one in which there was no relationship between elements across time and one that had an autoregressive structure.
+---
+
+
+# Pane-specific model
+
+- Associate `\(\bar{Y}_{ijk\cdot}\)` with log concentration averaged over replicate measurements of
+ - fragment `\(k \in \{1,...,24\}\)` from
+ - pane `\(j \in \{1,...,31\}\)` of
+ - element `\(i \in \{1,2,3\}\)` (iron, hafnium, zirconium, respectively)
+
+--
+
+`\begin{align}
+\bar{Y}_{ijk\cdot} | \mu_{ij}, \sigma_i^2 &amp;\overset{ind}{\sim} N(\mu_{ij}, \sigma_i^2) \\
+\mu_{ij} &amp;\overset{d}{=} \eta_i + \tau_i \theta_{ij}\ \ \ (*)\\
+\eta_i &amp;\overset{ind}{\sim} p(\eta_i) \propto 1 \\
+\tau_i &amp;\overset{ind}{\sim} p(\tau_i) \propto I(\tau_i &gt; 0)\\
+\theta_{ij} &amp;\overset{iid}{\sim} N(0,1) \\
+\sigma_i^2 &amp;\overset{iid}{\sim} \text{Inv}-\chi^2(1,1)
+\end{align}`
+
+.footnote[
+`\((*)\)` See BDA3 pg. 394
+]
+
+???
+- First, the "pane-specific" model in which we don't assume a time-dependent relationship between the panes.
+- We will denote the log concentrations averaged over replicate measurements using `\(\bar{Y}\)` where the subscripts represent the measurement taken from the `\(k\)`th fragment from the `\(j\)`th pane of the `\(i\)`th element.
+- We wil assume that these concentrations are normally distributed with a mean dependent on the element and pane under consideration and variance only dependent on element.
+- The mean will essentially be normally distributed as well, although I used this particular parameterization for numerical reasons.
+- A default inverse-$\chi^2$ prior was used on `\(\sigma_i^2\)` that I didn't find compelling evidence to change.
+
+---
+# Autoregressive model
+
+- Associate `\(\bar{Y}_{ijk\cdot}(t)\)` with log concentration averaged over replicate measurements where `\(t \in \{1,...,22\}\)` represents the sampling day
+ 
+`\begin{align*}
+ \bar{Y}_{ijk\cdot}(t) | \mu_{ij}(t), \sigma_i^2 &amp;\overset{ind}{\sim} N(\mu_{ij}(t), \sigma_i^2) \\
+ \mu_{ij}(t) &amp;\overset{d}{=} \eta_i + \gamma_i(t) + \tau_i \theta_{ij} \\
+ \eta_i &amp;\overset{ind}{\sim} p(\eta_i) \propto 1 \\
+ \gamma_i(t) &amp;\overset{d}{=} \alpha_i \gamma_i(t-1) I(t &gt; 1) + \epsilon_i(t) \\
+ \alpha_i &amp;\overset{ind}{\sim} p(\alpha_i) \propto I(-1 &lt; \alpha_i &lt; 1) \\
+ \epsilon_i(t) &amp;\overset{iid}{\sim} N(0,.1) \\
+ \tau_i &amp;\overset{ind}{\sim} p(\tau_i) \propto I(\tau_i &gt; 0) \\
+ \theta_{ij} &amp;\overset{iid}{\sim} N(0,1) \\
+ \sigma_i^2 &amp;\overset{iid}{\sim} \text{Inv}-\chi^2(1,1)
+\end{align*}`
+
+???
+- We will now include a time index on our observations.
+- I wanted the autoregressive model to have a similar structure to the pane-specific model other than the AR term
+- The only big difference between this model and the previous one is the addition of a `\(\gamma_i(t)\)` term in the specification of `\(\mu_{ij}\)` that depends on the previous value of `\(\gamma_i(t-1)\)`.
+
+- Note that the two models are essentially equivalent if `\(\alpha_i = 0\)`
+- Also, `\(\alpha_i\)` constrained to produce a stationary AR(1) process 
+
+- An additional regression on time was explored, but determined to be too computationally expensive
+
+---
+
+
+# Autoregressive model - missing values
+
+- 3 days have zero observations
+
+--
+
+- Generate a pane-worth (24 `\(\times\)` 3) of observations from a normal with 
+ - linearly interpolated means
+ - variances `\(\hat{\sigma}_i^2\)` estimated from posterior samples of pane-specific model
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-6-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- It's important to also point-out how I dealt with the three days of missing observations.
+- Using the sample average of the posterior estimates for the `\(\sigma_i^2\)` terms from the pane-specific model, I generated normally distributed data. 
+ - The expectatiosn were linearly interpolated between the two closest observed days.
+---
+class: inverse, center, middle
+
+# Results
+
+???
+- Now to discuss how successful each model was at fitting to the data.
+
+---
+# Pane-specific model
+
+- 5000 burn-in, 5000 inferential
+
+- No divergent transitions
+
+- Scale reduction factor values well-behaved
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-7-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- The pane-specific model was fit with 5000 burn-in samples and 5000 inferential samples.
+- There were no divergent transitions indicating the parameter space was sufficiently explored by the Hamiltonian Metropolis-Hastings chains
+- Additionally, the `\(\hat{R}\)` values were fairly well-behaved indicating that the chains were mixing fairly well.
+
+---
+#Pane-specific model
+
+- Hafnium and Zirconium low-level parameters' effective sample sizes small
+
+&lt;table&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:left;"&gt; diagnostic &lt;/th&gt;
+   &lt;th style="text-align:left;"&gt; parameter &lt;/th&gt;
+   &lt;th style="text-align:right;"&gt; value &lt;/th&gt;
+   &lt;th style="text-align:left;"&gt; rating &lt;/th&gt;
+   &lt;th style="text-align:left;"&gt; description &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; eta[3] &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.0666882 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; low &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; eta[2] &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.0720064 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; low &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; tau[2] &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1286298 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; ok &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.5 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; tau[3] &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1358744 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; ok &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.5 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; lp__ &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.1577378 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; ok &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.5 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; neff_ratio &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; tau[1] &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 0.2204662 &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; ok &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.5 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+- Potential misspecification of `\(\mu_{ij}\)` under pane-specific model?
+&lt;!-- - Still admissable by Gelman et al. rule-of-thumb of `\(10c\)` for `\(c\)` total chains (pgs. 287, 288) --&gt;
+
+???
+- In terms of effective sample sizes, it does appear that the expectation and error terms for the Hafnium and Zirconium data model expectations, `\(\eta_2, \eta_3, \tau_2,\)` and `\(\tau_3\)`, have relatively low effective sample sizes.
+ - This indicates some potential issues with the model specification
+
+- If we look at the ACF plots for these parameters, we can clearly see that the ACF is not decaying as quickly as we would like.
+- This again hints that we might have some model misspecification issues
+---
+#Pane-specific model
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-9-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- We can see here the posterior distributions for the data model means for each element/pane combination
+- Given the uninformative priors we placed on the `\(\mu_{ij}\)`s' parameters, it makes sense that they should be located near where the observed values are for each element/pane combination
+
+---
+# Autoregressive model
+
+- 5000 burn-in, 5000 inferential
+
+- Convergence diagnostics for majority of parameters look fine
+
+- Effective sample size and ACF for certain parameters may indicate issues
+
+&lt;table&gt;
+ &lt;thead&gt;
+  &lt;tr&gt;
+   &lt;th style="text-align:left;"&gt; param &lt;/th&gt;
+   &lt;th style="text-align:left;"&gt; description &lt;/th&gt;
+   &lt;th style="text-align:right;"&gt; n &lt;/th&gt;
+  &lt;/tr&gt;
+ &lt;/thead&gt;
+&lt;tbody&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; epsilonIron &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 28 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; etaIron &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 1 &lt;/td&gt;
+  &lt;/tr&gt;
+  &lt;tr&gt;
+   &lt;td style="text-align:left;"&gt; gammaIron &lt;/td&gt;
+   &lt;td style="text-align:left;"&gt; N[eff]/N &amp;lt;= 0.1 &lt;/td&gt;
+   &lt;td style="text-align:right;"&gt; 34 &lt;/td&gt;
+  &lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+???
+- As for the autoregressive mode, the same number burn in and inferential samples were used
+- The convergence diagnostics for most parameters looked fine.
+- However, like with the pane-specific model, expected sample size and ACF seemed to indicate some issues with certain parameters.
+- We can see here a tally of the parameters that had associated effective sample size ratio less than .1.
+- Note that the majority of the issue parameters correspond to the AR parameters in the Iron model
+ - We'll discuss this in greater detail in the Discussion section
+
+---
+# Autoregressive model
+
+&lt;img src="images/arCredibleIntervals.png" width="670" style="display: block; margin: auto;" /&gt;
+
+???
+- We can see 95% credible intervals for each element/pane-specific means over time. 
+- Again, these show similar behavior to that of the observed data
+
+---
+# Autoregressive model
+
+&lt;img src="images/arModelAlphaDistributions.png" width="1024" style="display: block; margin: auto;" /&gt;
+
+???
+- Lastly, and most noteworthy, we see here the distributions for the the AR coefficients for each element
+- The dark blue bar in the middle denotes the middle 50% credible region
+- The lighter blue bar indicates a middle 90% credible region
+- We can see here that the AR coefficient associated with Iron is rather diffuse from -1 to 1
+- The Hafnium and Zirconium AR coefficients, on the other hand, are highly concentrated near 1
+
+- This indicates that there is indeed a positive temporal association between the concentrations
+- Recall that the Hafnium and Zirconium concentrations exhibited the most obvious temporal structure while Iron did not have a clear pattern
+
+---
+class: inverse, center, middle
+
+# Discussion
+
+---
+# Effective sample size and ACF diagnostics
+
+- Small ESS/High ACF associated with data behavior that doesn't "agree" with model
+
+--
+- Hafnium &amp; Zirconium: clear change in expectation over time
+ - Pane-specific constant mean, `\(\eta_i\)`, structure too rigid
+- Iron: little/no obvious temporal behavior
+ - AR(1) terms, `\(\alpha_i\)`, `\(\epsilon_i(t)\)`, and `\(\gamma_i(t)\)`, possibly unnecessary
+
+&lt;img src="544_projectSlides_zemmels_files/figure-html/unnamed-chunk-13-1.png" style="display: block; margin: auto;" /&gt;
+
+???
+- As discussed in the Results section, it seems like the effective sample size and ACF indicate data behavior that the model doesn't seem to "agree" with
+- For example, we can see in the time series plot again that the mean Hafnium and Zirconium concentrations clearly change over time, so the constant mean structure under the pane-specific model was too rigid.
+- On the other hand, the Iron concentrations did not exhibit an obvious temporal pattern
+- I'm not sure if there's a mathematical reason for why we observed this behavior specifically in the effective sample size or ACF, but I thought it was an interesting point to bring up
+
+---
+# What type of time dependency?
+
+- Able to explain time dependence more effectively
+
+- AR(1) coefficients `\(\approx 1 \approx\)` random-walk behavior
+
+ - One person's random-walk is another's quadratic regression on time
+
+--
+
+- Is there really *auto*regressive structure?
+ 
+  - Using up Hafnium-rich materials one day *causes* lower concentration in future panes?
+
+--
+  
+- Regression on time may explain *variation* in data better, but would it explain the data better?
+
+--
+
+- Future work: explore other types of temporal models
+ - BVAR: Bayesian Vector Autoregression
+     - Model between-element dependencies too
+
+???
+- Based on this analysis, I think we can confidently say and explain some of the temporal behavior
+- The `\(\alpha_i\)` values near 1 for the Hafnium and Zirconium concentations would mean that the trajectory of the time series is close to that of a random walk.
+ - However, it can be difficult to differentiate between something like the trajectory of a random walk vs. a time series that is related quadratically to time.
+- I think the autoregressive structure may make sense in terms of interpretability. For example, using up Hafnium-rich resources one day may cause there to be less Hafnium in panes manufactured later on
+- A regression on time may exlain the variability in the data better, but does it necessarily explain the "data generating mechanism" more effectively than an AR model?
+- I think it would be worthwhile to for future work to explore other temporal models.
+ - For example, a Bayesian Vector Autoregressive model would allow for modeling of dependencies between elements as well.
+
+---
+# References
+
+Gelman, A, J. Carlin, et al. (2013). _Bayesian Data Analysis, Third
+Edition_. Chapman &amp; Hall/CRC Texts in Statistical Science. Taylor &amp;
+Francis. ISBN: 978-1-4398-4095-5.
+
+Homan, M. D. and A. Gelman (2014). "The No-U-Turn Sampler: Adaptively
+Setting Path Lengths in Hamiltonian Monte Carlo". In: _J. Mach. Learn.
+Res._ 15.1, p. 1593â€“1623.
+
+Park, S. and A. Carriquiry (2019). "Learning algorithms to evaluate
+forensic glass evidence". In: _Ann. Appl. Stat._ 13.2, pp. 1068-1102.
+DOI: [10.1214/18-AOAS1211](https://doi.org/10.1214%2F18-AOAS1211).
+
+Park, S, A. Carriquiry, et al. (2020). "A database of elemental
+compositions of architectural float glass samples measured by
+LA-ICP-MS". In: _Data in Brief_ 30, p. 105449. DOI:
+[https://doi.org/10.1016/j.dib.2020.105449](https://doi.org/https%3A%2F%2Fdoi.org%2F10.1016%2Fj.dib.2020.105449).
+
+Park, S. and S. Tyner (2019). "Evaluation and comparison of methods for
+forensic glass source conclusions". In: _Forensic Science
+International_ 305, p. 110003. DOI:
+[https://doi.org/10.1016/j.forsciint.2019.110003](https://doi.org/https%3A%2F%2Fdoi.org%2F10.1016%2Fj.forsciint.2019.110003).
+
+---
+class: inverse, center, middle
+
+# Thank you!
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"highlightStyle": "github",
+"highlightLines": true,
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();
+(function() {
+  "use strict"
+  // Replace <script> tags in slides area to make them executable
+  var scripts = document.querySelectorAll(
+    '.remark-slides-area .remark-slide-container script'
+  );
+  if (!scripts.length) return;
+  for (var i = 0; i < scripts.length; i++) {
+    var s = document.createElement('script');
+    var code = document.createTextNode(scripts[i].textContent);
+    s.appendChild(code);
+    var scriptAttrs = scripts[i].attributes;
+    for (var j = 0; j < scriptAttrs.length; j++) {
+      s.setAttribute(scriptAttrs[j].name, scriptAttrs[j].value);
+    }
+    scripts[i].parentElement.replaceChild(s, scripts[i]);
+  }
+})();
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+// adds .remark-code-has-line-highlighted class to <pre> parent elements
+// of code chunks containing highlighted lines with class .remark-code-line-highlighted
+(function(d) {
+  const hlines = d.querySelectorAll('.remark-code-line-highlighted');
+  const preParents = [];
+  const findPreParent = function(line, p = 0) {
+    if (p > 1) return null; // traverse up no further than grandparent
+    const el = line.parentElement;
+    return el.tagName === "PRE" ? el : findPreParent(el, ++p);
+  };
+
+  for (let line of hlines) {
+    let pre = findPreParent(line);
+    if (pre && !preParents.includes(pre)) preParents.push(pre);
+  }
+  preParents.forEach(p => p.classList.add("remark-code-has-line-highlighted"));
+})(document);</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
