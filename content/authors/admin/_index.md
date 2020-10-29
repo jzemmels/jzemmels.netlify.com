@@ -36,6 +36,9 @@ social:
 - icon: github
   icon_pack: fab
   link: https://github.com/jzemmels
+- icon: linkedin
+  icon_pack: fab
+  link: //linkedin.com/in/josephzemmels
 superuser: true
 user_groups:
 - Researchers
