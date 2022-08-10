@@ -1,1 +1,2 @@
-Joe Zemmels' personal site
+# jzemmels.netlify.com
+Joe Zemmels Personal Site
